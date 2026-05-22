@@ -36,33 +36,34 @@ type Server struct {
 }
 
 func main() {
+	// Default values come from Config so they're centralized
+	defaultCfg := cortex.DefaultConfig()
+
 	// ── Command Line Flags ───────────────────────────────────────────
-	port := flag.String("port", "8080", "Port to bind the HTTP server to")
+	port := flag.String("port", defaultCfg.WebPort, "Port to bind the HTTP server to")
+	bindAddr := flag.String("bind", defaultCfg.WebBindAddr, "Address to bind the HTTP server to")
 	openBrowser := flag.Bool("open", true, "Auto-open the dashboard in the default browser")
-	dataDir := flag.String("data-dir", "./data/cortex", "Path to organism data directory")
+	dataDir := flag.String("data-dir", defaultCfg.DataDir, "Path to organism data directory")
 	fresh := flag.Bool("fresh", false, "Start with a new organism (ignore saved state)")
 	noSave := flag.Bool("no-save", false, "Don't auto-save state on exit")
-	seed := flag.Int64("seed", 42, "Random seed for biological core initialization")
+	seed := flag.Int64("seed", defaultCfg.Seed, "Random seed for biological core initialization")
 	flag.Parse()
 
-	// Print visual launch banner
-	fmt.Println()
-	fmt.Println("╔══════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                                                                  ║")
-	fmt.Println("║   🌐  NEXUS CORTEX — Web UI Neural Dashboard                      ║")
-	fmt.Println("║                                                                  ║")
-	fmt.Println("║   Starting Zero-Dependency Real-Time Introspection Server        ║")
-	fmt.Println("║                                                                  ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════════╝")
-	fmt.Println()
-
 	// Construct Organism configuration
-	cfg := cortex.DefaultConfig()
+	cfg := defaultCfg
 	cfg.DataDir = *dataDir
 	cfg.Fresh = *fresh
 	cfg.NoSave = *noSave
 	cfg.Seed = *seed
+	cfg.WebPort = *port
+	cfg.WebBindAddr = *bindAddr
 	cfg.Demo = false // Server handles interactivity dynamically
+
+	// Print visual launch banner
+	fmt.Println()
+	fmt.Println("  NEXUS CORTEX - Web UI Neural Dashboard")
+	fmt.Println("  Starting Zero-Dependency Real-Time Introspection Server")
+	fmt.Println()
 
 	// Instantiate deterministic biological randomizer
 	rng := rand.New(rand.NewSource(cfg.Seed))
@@ -144,8 +145,8 @@ func main() {
 	actualPort := startPort
 	// Search up to 200 consecutive ports to guarantee we find a free one
 	for p := startPort; p < startPort+200; p++ {
-		// Bind to loopback only; the dashboard mutates local model state.
-		addr := fmt.Sprintf("127.0.0.1:%d", p)
+		// Bind to configured address; the dashboard mutates local model state.
+		addr := fmt.Sprintf("%s:%d", cfg.WebBindAddr, p)
 		listener, bindErr = net.Listen("tcp", addr)
 		if bindErr == nil {
 			actualPort = p

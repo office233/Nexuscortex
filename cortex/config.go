@@ -1,6 +1,9 @@
 package cortex
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // Config represents all configurations, sizes, thresholds, seeds, paths,
 // and learning knobs for the Nexus Cortex digital organism.
@@ -454,6 +457,24 @@ func DefaultConfig() Config {
 // Validate checks the configuration for internal consistency.
 // Returns an error if any constraints are violated.
 func (c Config) Validate() error {
+	// Dimensional constraints
+	if c.SDRSize <= 0 || c.SDRSize > 1_000_000 {
+		return fmt.Errorf("SDRSize must be in [1, 1000000], got %d", c.SDRSize)
+	}
+	if c.ActiveCount <= 0 || c.ActiveCount > c.SDRSize {
+		return fmt.Errorf("ActiveCount must be in [1, SDRSize=%d], got %d", c.SDRSize, c.ActiveCount)
+	}
+	if c.MaxMemories <= 0 || c.MaxMemories > 10_000_000 {
+		return fmt.Errorf("MaxMemories must be in [1, 10000000], got %d", c.MaxMemories)
+	}
+	if c.MaxGenWords < 0 || c.MaxGenWords > 10_000 {
+		return fmt.Errorf("MaxGenWords must be in [0, 10000], got %d", c.MaxGenWords)
+	}
+
+	// Network/neuron constraints
+	if c.PrefrontalNetSize <= 0 || c.PrefrontalNetSize > 1_000_000 {
+		return fmt.Errorf("PrefrontalNetSize must be in [1, 1000000], got %d", c.PrefrontalNetSize)
+	}
 	if c.NeuronMinThreshold > c.NeuronMaxThreshold {
 		return fmt.Errorf("NeuronMinThreshold (%d) > NeuronMaxThreshold (%d)", c.NeuronMinThreshold, c.NeuronMaxThreshold)
 	}
@@ -469,5 +490,25 @@ func (c Config) Validate() error {
 	if c.PredictorUnionDepth > c.PredictorWindowSize {
 		return fmt.Errorf("PredictorUnionDepth (%d) > PredictorWindowSize (%d)", c.PredictorUnionDepth, c.PredictorWindowSize)
 	}
+
+	// Autonomous learner constraints
+	if c.AutoHFRowsPerDS < 0 || c.AutoHFRowsPerDS > 100_000 {
+		return fmt.Errorf("AutoHFRowsPerDS must be in [0, 100000], got %d", c.AutoHFRowsPerDS)
+	}
+	if c.AutoLearnInterval < 0 {
+		return fmt.Errorf("AutoLearnInterval must be >= 0, got %d", c.AutoLearnInterval)
+	}
+	if c.AutoMaxGapsPerCycle < 0 {
+		return fmt.Errorf("AutoMaxGapsPerCycle must be >= 0, got %d", c.AutoMaxGapsPerCycle)
+	}
+
+	// Web server constraints
+	if c.WebPort != "" {
+		p, err := strconv.Atoi(c.WebPort)
+		if err != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("WebPort must be a valid port [1-65535], got %q", c.WebPort)
+		}
+	}
+
 	return nil
 }

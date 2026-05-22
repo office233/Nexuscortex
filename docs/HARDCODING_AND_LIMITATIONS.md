@@ -101,5 +101,6 @@ No API keys are required or stored.
 ## 9. What Is NOT Hardcoded
 
 - No API keys, tokens, passwords, or secrets in the codebase.
-- No hardcoded file paths (all use `Config.DataDir`).
+- No absolute hardcoded production paths; relative defaults exist for local
+  development (`./data/cortex` in Config, `data/corpus` in scripts).
 - No hardcoded model weights (all learned or randomly initialized).
