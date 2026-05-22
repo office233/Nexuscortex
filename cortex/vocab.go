@@ -102,7 +102,7 @@ func (v *Vocab) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal vocab: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // LoadVocab reads a vocabulary from a JSON file.

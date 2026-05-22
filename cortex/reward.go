@@ -220,7 +220,7 @@ func (r *RewardSystem) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("reward save marshal: %w", err)
 	}
-	if err := os.WriteFile(path, raw, 0644); err != nil {
+	if err := os.WriteFile(path, raw, 0600); err != nil {
 		return fmt.Errorf("reward save write: %w", err)
 	}
 	return nil

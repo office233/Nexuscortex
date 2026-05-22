@@ -30,7 +30,7 @@ func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
 		DataDir: filepath.Join(cfg.DataDir, "fractal_cortex"),
 	}
 
-	_ = os.MkdirAll(fc.DataDir, 0755)
+	_ = os.MkdirAll(fc.DataDir, 0700)
 
 	// Start with exactly 1 block
 	fc.SpawnNeurogenesis()

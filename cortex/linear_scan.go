@@ -525,7 +525,10 @@ func (u *UltraDeepStack) processLayerSparse(input SDR, layerIdx int) SDR {
 	}
 
 	// 1. Feature extraction: up-project through shared ternary layer (SPARSE)
-	upAct := u.FeatureUp.ForwardSparse(activeIdx, values)
+	upAct, err := u.FeatureUp.ForwardSparse(activeIdx, values)
+	if err != nil {
+		upAct = make([]int16, u.HiddenDim)
+	}
 
 	// 2. Non-linearity: ReLU-like — keep only positive activations
 	upIndices := make([]int, 0, len(upAct)/4)
@@ -540,7 +543,10 @@ func (u *UltraDeepStack) processLayerSparse(input SDR, layerIdx int) SDR {
 	// 3. Down-project back to dim (SPARSE from hidden)
 	var downAct []int16
 	if len(upIndices) > 0 {
-		downAct = u.FeatureDown.ForwardSparse(upIndices, upValues)
+		downAct, err = u.FeatureDown.ForwardSparse(upIndices, upValues)
+		if err != nil {
+			downAct = make([]int16, u.Dim)
+		}
 	} else {
 		downAct = make([]int16, u.Dim)
 	}

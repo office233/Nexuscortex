@@ -233,7 +233,7 @@ func (e *Encoder) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal encoder: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // LoadEncoder reads a saved encoder from disk and reconnects it to

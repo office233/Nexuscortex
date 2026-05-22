@@ -99,7 +99,7 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 	// Ensure the data directory exists.
 	// Error is intentionally ignored: if the directory cannot be created,
 	// subsequent file operations will fail with a clear error.
-	_ = os.MkdirAll(cfg.DataDir, 0755)
+	_ = os.MkdirAll(cfg.DataDir, 0700)
 
 	brainFile := filepath.Join(cfg.DataDir, "brain.nxbrain")
 	vocabFile := filepath.Join(cfg.DataDir, "vocab.json")
@@ -858,7 +858,7 @@ type organismMeta struct {
 // Save persists all organism state to the given directory.
 // The directory is created if it does not exist.
 func (o *Organism) Save(dataDir string) error {
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("organism save mkdir: %w", err)
 	}
 
@@ -908,7 +908,7 @@ func (o *Organism) Save(dataDir string) error {
 		return fmt.Errorf("organism save meta marshal: %w", err)
 	}
 	metaPath := filepath.Join(dataDir, "organism.json")
-	if err := os.WriteFile(metaPath, metaJSON, 0644); err != nil {
+	if err := os.WriteFile(metaPath, metaJSON, 0600); err != nil {
 		return fmt.Errorf("organism save meta write: %w", err)
 	}
 

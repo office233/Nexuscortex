@@ -269,52 +269,48 @@ func (l *TernaryLayer) Forward(input []int16) []int16 {
 // ForwardSparse performs forward pass on SPARSE input (SDR-style).
 // Only processes input positions that are non-zero — much faster when
 // input sparsity is high (e.g., SDR with 0.5% active bits).
-func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) []int16 {
-	output := make([]int16, l.OutputSize)
-	copy(output, l.Bias)
-
+//
+// Returns (output, nil) on success, or (nil, error) for invalid input.
+func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) ([]int16, error) {
 	if l.InputSize <= 0 || l.OutputSize <= 0 || len(l.Tiles) == 0 {
-		return output
+		return nil, fmt.Errorf("ternary: invalid layer (input=%d output=%d tiles=%d)", l.InputSize, l.OutputSize, len(l.Tiles))
 	}
 	if len(activeIndices) != len(activeValues) {
-		return output
+		return nil, fmt.Errorf("ternary: mismatched activeIndices(%d) and activeValues(%d)", len(activeIndices), len(activeValues))
 	}
 	for _, idx := range activeIndices {
 		if idx < 0 || idx >= l.InputSize {
-			return output
+			return nil, fmt.Errorf("ternary: index %d out of range [0, %d)", idx, l.InputSize)
 		}
 	}
+
+	output := make([]int16, l.OutputSize)
+	copy(output, l.Bias)
 
 	if l.Engine != nil {
 		// Delegate to hardware engine (returns error instead of panicking)
 		if eng, ok := l.Engine.(interface {
 			ForwardSparse([]uint32, []int16, []uint32, []int16, int, int) ([]int16, error)
 		}); ok {
-			// Convert activeIndices to uint32
 			indices32 := make([]uint32, len(activeIndices))
 			for i, v := range activeIndices {
 				indices32[i] = uint32(v)
 			}
-
-			// Fast zero-copy cast using unsafe
 			tiles32 := unsafe.Slice((*uint32)(unsafe.Pointer(&l.Tiles[0])), len(l.Tiles))
 			result, err := eng.ForwardSparse(indices32, activeValues, tiles32, l.Bias, l.TilesPerRow, l.OutputSize)
 			if err == nil {
-				return result
+				return result, nil
 			}
-			// Engine failed — fall through to CPU path below.
-			// This ensures GPU errors never crash the process.
+			// Engine failed — fall through to CPU path.
 		}
 	}
 
 	for j := 0; j < l.OutputSize; j++ {
 		var acc int32
 		rowOffset := j * l.TilesPerRow
-
 		for k, idx := range activeIndices {
 			tileIdx := rowOffset + idx/16
 			pos := idx % 16
-
 			tile := uint32(l.Tiles[tileIdx])
 			var sign, mask uint8
 			if pos < 8 {
@@ -325,18 +321,15 @@ func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) 
 				mask = uint8(tile >> 24)
 				pos -= 8
 			}
-
 			bit := uint8(1 << uint(pos))
 			if mask&bit != 0 {
 				if sign&bit != 0 {
-					acc -= int32(activeValues[k]) // weight = -1
+					acc -= int32(activeValues[k])
 				} else {
-					acc += int32(activeValues[k]) // weight = +1
+					acc += int32(activeValues[k])
 				}
 			}
-			// weight = 0: nothing to do (skip!)
 		}
-
 		if acc > 32767 {
 			acc = 32767
 		} else if acc < -32768 {
@@ -345,8 +338,10 @@ func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) 
 		output[j] += int16(acc)
 	}
 
-	return output
+	return output, nil
 }
+
+
 
 // MemoryBytes returns the total memory used by this layer in bytes.
 func (l *TernaryLayer) MemoryBytes() int {

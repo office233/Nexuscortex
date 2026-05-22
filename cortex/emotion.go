@@ -380,7 +380,7 @@ func (e *EmotionEngine) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("emotion save marshal: %w", err)
 	}
-	if err := os.WriteFile(path, raw, 0644); err != nil {
+	if err := os.WriteFile(path, raw, 0600); err != nil {
 		return fmt.Errorf("emotion save write: %w", err)
 	}
 	return nil

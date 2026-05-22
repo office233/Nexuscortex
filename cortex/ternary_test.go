@@ -103,7 +103,10 @@ func TestTernaryLayerForwardSparse(t *testing.T) {
 	// Only indices 0 and 2 are active
 	indices := []int{0, 2}
 	values := []int16{10, 30}
-	output := layer.ForwardSparse(indices, values)
+	output, err := layer.ForwardSparse(indices, values)
+	if err != nil {
+		t.Fatalf("ForwardSparse failed: %v", err)
+	}
 
 	// Output 0 = 10*1 + 30*1 = 40
 	if output[0] != 40 {
@@ -264,6 +267,6 @@ func BenchmarkTernarySparseForward_1024x1024(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		layer.ForwardSparse(indices, values)
+		layer.ForwardSparse(indices, values) //nolint:errcheck
 	}
 }

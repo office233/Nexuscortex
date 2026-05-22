@@ -155,6 +155,20 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		return out, nil
 	}
 
+	// Defensive validation — engine is a public interface
+	if outputSize <= 0 || tilesPerRow <= 0 {
+		return nil, fmt.Errorf("webgpu: invalid outputSize=%d or tilesPerRow=%d", outputSize, tilesPerRow)
+	}
+	if len(activeIndices) != len(activeValues) {
+		return nil, fmt.Errorf("webgpu: mismatched activeIndices(%d) and activeValues(%d)", len(activeIndices), len(activeValues))
+	}
+	if len(tiles) == 0 {
+		return nil, fmt.Errorf("webgpu: empty tiles")
+	}
+	if len(bias) < outputSize {
+		return nil, fmt.Errorf("webgpu: bias length %d < outputSize %d", len(bias), outputSize)
+	}
+
 	// Prepare i32 buffers for activeValues and bias
 	activeValues32 := make([]int32, len(activeValues))
 	for i, v := range activeValues {
@@ -168,6 +182,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 
 	params := []uint32{uint32(len(activeIndices)), uint32(outputSize), uint32(tilesPerRow), 0}
 
+	// All slices are validated non-empty above, so unsafe.Slice is safe here
 	activeIndicesBytes := unsafe.Slice((*byte)(unsafe.Pointer(&activeIndices[0])), len(activeIndices)*4)
 	activeValuesBytes := unsafe.Slice((*byte)(unsafe.Pointer(&activeValues32[0])), len(activeValues32)*4)
 	tilesBytes := unsafe.Slice((*byte)(unsafe.Pointer(&tiles[0])), len(tiles)*4)
@@ -266,7 +281,10 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 	}
 	defer bindGroup.Release()
 
-	encoder, _ := e.device.CreateCommandEncoder(nil)
+	encoder, err := e.device.CreateCommandEncoder(nil)
+	if err != nil {
+		return nil, fmt.Errorf("webgpu: create command encoder: %w", err)
+	}
 	computePass := encoder.BeginComputePass(nil)
 	computePass.SetPipeline(e.pipeline)
 	computePass.SetBindGroup(0, bindGroup, nil)
@@ -275,7 +293,11 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 
 	encoder.CopyBufferToBuffer(bufOutput, 0, bufStaging, 0, outputSizeBytes)
 
-	cmdBuffer, _ := encoder.Finish(nil)
+	cmdBuffer, err := encoder.Finish(nil)
+	if err != nil {
+		encoder.Release()
+		return nil, fmt.Errorf("webgpu: finish command encoder: %w", err)
+	}
 	e.queue.Submit(cmdBuffer)
 
 	encoder.Release()

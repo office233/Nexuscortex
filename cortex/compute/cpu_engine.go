@@ -1,5 +1,7 @@
 package compute
 
+import "fmt"
+
 // CPUEngine provides a baseline software implementation of the ComputeEngine.
 // It is used as a fallback if GPU hardware is unavailable, and as the reference
 // truth for unit testing the GPU shaders.
@@ -16,6 +18,20 @@ func (e *CPUEngine) Init() error {
 func (e *CPUEngine) Close() {}
 
 func (e *CPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) ([]int16, error) {
+	// Defensive validation — engine is a public interface and may be called directly.
+	if outputSize <= 0 || tilesPerRow <= 0 {
+		return nil, fmt.Errorf("cpu: invalid outputSize=%d or tilesPerRow=%d", outputSize, tilesPerRow)
+	}
+	if len(activeIndices) != len(activeValues) {
+		return nil, fmt.Errorf("cpu: mismatched activeIndices(%d) and activeValues(%d)", len(activeIndices), len(activeValues))
+	}
+	if len(tiles) == 0 && len(activeIndices) > 0 {
+		return nil, fmt.Errorf("cpu: empty tiles with %d active indices", len(activeIndices))
+	}
+	if len(bias) < outputSize {
+		return nil, fmt.Errorf("cpu: bias length %d < outputSize %d", len(bias), outputSize)
+	}
+
 	output := make([]int16, outputSize)
 	copy(output, bias)
 
@@ -25,6 +41,9 @@ func (e *CPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, 
 
 		for k, idx := range activeIndices {
 			tileIdx := rowOffset + int(idx)/16
+			if tileIdx < 0 || tileIdx >= len(tiles) {
+				return nil, fmt.Errorf("cpu: tile index %d out of range [0, %d)", tileIdx, len(tiles))
+			}
 			pos := idx % 16
 
 			tile := tiles[tileIdx]

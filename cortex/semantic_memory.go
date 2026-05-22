@@ -210,7 +210,7 @@ func (sm *SemanticMemory) Save(path string) error {
 		return fmt.Errorf("semantic memory marshal: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("semantic memory write: %w", err)
 	}
 

@@ -177,7 +177,7 @@ func (s *SelfModel) Save(path string) error {
 		return fmt.Errorf("self save marshal: %w", err)
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, raw, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, raw, 0600); err != nil {
 		return fmt.Errorf("self save write: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
