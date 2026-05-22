@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -116,6 +117,7 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 	// Try hardware acceleration
 	var engine interface{}
 	gpu := compute.NewWebGPUEngine()
+	gpu.Timeout = time.Duration(cfg.WebGPUTimeoutSecs) * time.Second
 	if err := gpu.Init(); err == nil {
 		fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
 		engine = gpu
@@ -1080,6 +1082,7 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 	// Try hardware acceleration
 	var engine interface{}
 	gpu := compute.NewWebGPUEngine()
+	gpu.Timeout = time.Duration(cfg.WebGPUTimeoutSecs) * time.Second
 	if err := gpu.Init(); err == nil {
 		fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
 		engine = gpu

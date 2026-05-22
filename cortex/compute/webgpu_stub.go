@@ -3,18 +3,23 @@
 
 package compute
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // WebGPUEngine is a fallback stub when compiled without WebGPU support.
 // It redirects all execution paths to the robust CPUEngine.
 type WebGPUEngine struct {
-	cpu *CPUEngine
+	cpu     *CPUEngine
+	Timeout time.Duration
 }
 
 // NewWebGPUEngine constructs a CPU-backed WebGPUEngine stub.
 func NewWebGPUEngine() *WebGPUEngine {
 	return &WebGPUEngine{
-		cpu: NewCPUEngine(),
+		cpu:     NewCPUEngine(),
+		Timeout: 5 * time.Second,
 	}
 }
 

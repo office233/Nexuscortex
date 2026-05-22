@@ -169,7 +169,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Standard Polling Call
     async function fetchStats() {
         try {
-            const res = await fetch('/api/stats');
+            const res = await fetch('/api/stats', {
+                headers: {
+                    'X-Nexus-Token': nexusToken
+                }
+            });
             if (res.ok) {
                 const stats = await res.json();
                 updateDashboard(stats);

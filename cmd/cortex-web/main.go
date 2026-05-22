@@ -316,6 +316,10 @@ func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
 
 // GetStatsHandler returns JSON representation of internal modules
 func (s *Server) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.validateRequest(w, r) {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

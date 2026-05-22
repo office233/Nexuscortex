@@ -228,6 +228,9 @@ type Config struct {
 	WebLearnerWikiBaseURL  string `json:"web_learner_wiki_base_url,omitempty"`  // e.g. "wikipedia.org"
 	WebLearnerHFSearchURL  string `json:"web_learner_hf_search_url,omitempty"`
 	WebLearnerHFRowsURL    string `json:"web_learner_hf_rows_url,omitempty"`
+
+	// WebGPU hardware acceleration configuration
+	WebGPUTimeoutSecs int `json:"webgpu_timeout_secs"`
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -469,6 +472,9 @@ func DefaultConfig() Config {
 		WebLearnerWikiBaseURL: "wikipedia.org",
 		WebLearnerHFSearchURL: "https://huggingface.co/api/datasets",
 		WebLearnerHFRowsURL:   "https://datasets-server.huggingface.co/rows",
+
+		// WebGPU defaults
+		WebGPUTimeoutSecs: 5,
 	}
 }
 
@@ -574,6 +580,9 @@ func (c Config) Validate() error {
 	}
 	if c.WebLearnerUserAgent == "" {
 		return fmt.Errorf("WebLearnerUserAgent cannot be empty")
+	}
+	if c.WebGPUTimeoutSecs <= 0 || c.WebGPUTimeoutSecs > 120 {
+		return fmt.Errorf("WebGPUTimeoutSecs must be in [1, 120], got %d", c.WebGPUTimeoutSecs)
 	}
 
 	// Memory capacity and queue limits

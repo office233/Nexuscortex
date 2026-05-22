@@ -51,4 +51,11 @@ func TestConfigValidation(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for EmotionHistoryCapacity <= 0, got nil")
 	}
+
+	// 7. Invalid WebGPUTimeoutSecs should be rejected
+	cfg = DefaultConfig()
+	cfg.WebGPUTimeoutSecs = 200
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for WebGPUTimeoutSecs > 120, got nil")
+	}
 }

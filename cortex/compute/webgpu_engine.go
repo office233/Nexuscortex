@@ -19,11 +19,13 @@ type WebGPUEngine struct {
 	queue    *wgpu.Queue
 	pipeline *wgpu.ComputePipeline
 	cpu      *CPUEngine
+	Timeout  time.Duration
 }
 
 func NewWebGPUEngine() *WebGPUEngine {
 	return &WebGPUEngine{
-		cpu: NewCPUEngine(),
+		cpu:     NewCPUEngine(),
+		Timeout: 5 * time.Second,
 	}
 }
 
@@ -310,7 +312,11 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		done <- status
 	})
 
-	deadline := time.After(5 * time.Second)
+	timeout := e.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.After(timeout)
 WaitLoop:
 	for {
 		e.device.Poll(true, nil)
@@ -321,7 +327,7 @@ WaitLoop:
 			}
 			break WaitLoop
 		case <-deadline:
-			return nil, fmt.Errorf("webgpu: map async timed out after 5s")
+			return nil, fmt.Errorf("webgpu: map async timed out after %v", timeout)
 		default:
 		}
 	}
