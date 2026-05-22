@@ -55,7 +55,7 @@ func (r *ReasoningEngine) TryReason(input string) (string, bool) {
 	if answer, ok := r.trySorting(lower); ok {
 		return answer, true
 	}
-	if answer, ok := r.trySyllogism(lower); ok {
+	if answer, ok := r.trySyllogism(input); ok {
 		return answer, true
 	}
 	if answer, ok := r.trySequence(lower); ok {
@@ -317,9 +317,10 @@ func tryGeometricSequence(nums []float64) (string, bool) {
 
 // reSyllogism matches "All X are Y. Z is X. Is Z Y?"
 var reSyllogism = regexp.MustCompile(
-	`all\s+(\w+)\s+are\s+(\w+)\s*\.\s*(\w+)\s+is\s+(?:a\s+|an\s+)?(\w+)\s*\.\s*is\s+(\w+)\s+(?:a\s+|an\s+)?(\w+)\s*\??`)
+	`(?i)all\s+(\w+)\s+are\s+(\w+)\s*\.\s*(\w+)\s+is\s+(?:a\s+|an\s+)?(\w+)\s*\.\s*is\s+(\w+)\s+(?:a\s+|an\s+)?(\w+)\s*\??`)
 
 func (r *ReasoningEngine) trySyllogism(input string) (string, bool) {
+	// Run on original input to preserve casing of names
 	m := reSyllogism.FindStringSubmatch(input)
 	if m == nil {
 		return "", false
@@ -331,22 +332,30 @@ func (r *ReasoningEngine) trySyllogism(input string) (string, bool) {
 	// m[5]=Z (should match m[3]), m[6]=Y (should match m[2])
 	category := strings.ToLower(m[1])
 	property := strings.ToLower(m[2])
-	instanceName := strings.ToLower(m[3])
+	instanceName := m[3] // Keep original case for display
 	instanceCategory := strings.ToLower(m[4])
 	questionSubject := strings.ToLower(m[5])
-	questionProperty := strings.ToLower(m[6])
+	questionProperty := m[6] // Keep original case for display
 
 	// Validate the syllogism structure.
 	// Use stemMatch for comparison to handle singular/plural forms
 	// (e.g. "dogs" matches "dog", "animals" matches "animal").
 	if stemMatch(instanceCategory, category) &&
-		questionSubject == instanceName &&
-		stemMatch(questionProperty, property) {
-		return "yes", true
+		questionSubject == strings.ToLower(instanceName) &&
+		stemMatch(strings.ToLower(questionProperty), property) {
+		// Determine article: "an" before vowels, "a" otherwise.
+		article := "a"
+		if len(questionProperty) > 0 {
+			first := strings.ToLower(questionProperty[:1])
+			if first == "a" || first == "e" || first == "i" || first == "o" || first == "u" {
+				article = "an"
+			}
+		}
+		return fmt.Sprintf("yes, %s is %s %s", instanceName, article, questionProperty), true
 	}
 
 	// The subject is in the category but asking about a different property.
-	if stemMatch(instanceCategory, category) && questionSubject == instanceName {
+	if stemMatch(instanceCategory, category) && questionSubject == strings.ToLower(instanceName) {
 		return "no", true
 	}
 

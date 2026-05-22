@@ -89,8 +89,8 @@ func TestReasoningSyllogism(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"All dogs are animals. Rex is a dog. Is Rex an animal?", "yes"},
-		{"All cats are mammals. Luna is a cat. Is Luna a mammal?", "yes"},
+		{"All dogs are animals. Rex is a dog. Is Rex an animal?", "yes, Rex is an animal"},
+		{"All cats are mammals. Luna is a cat. Is Luna a mammal?", "yes, Luna is a mammal"},
 	}
 
 	for _, tc := range tests {
