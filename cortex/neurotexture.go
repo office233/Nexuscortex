@@ -504,6 +504,15 @@ func (j *PlasticityJournal) Clear() {
 	j.mu.Unlock()
 }
 
+// ClearApplied is called after MergeJournal() completes. Since Merge()
+// already filters out applied entries and keeps only unapplied ones,
+// this is effectively a no-op — it exists for explicit intent signaling.
+// Entries that weren't matched by any Merge() call are preserved.
+func (j *PlasticityJournal) ClearApplied() {
+	// Merge() already moved unapplied entries to remaining.
+	// Nothing to do — entries slice already contains only unapplied entries.
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────

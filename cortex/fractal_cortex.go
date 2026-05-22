@@ -47,10 +47,10 @@ func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
 	fc.SpawnNeurogenesis()
 
 	// Conditionally wire quantum-inspired routing.
-	// When EnableQuantumInspired is true, create a QuantumRouter that uses
-	// phase interference + SDR similarity for expert selection.
+	// QRouter is sized to actual block count (not MaxFractalBlocks) to
+	// avoid routing to non-existent experts.
 	if cfg.EnableQuantumInspired && len(fc.Blocks) > 0 {
-		fc.QRouter = NewQuantumRouter(MaxFractalBlocks, cfg.SDRSize, 2)
+		fc.QRouter = NewQuantumRouter(len(fc.Blocks), cfg.SDRSize, 2)
 		fc.Journal = NewPlasticityJournal()
 	}
 
@@ -94,6 +94,14 @@ func (fc *FractalCortex) SpawnNeurogenesis() {
 		perturbTernaryLayer(newBlock.SharedOutputLayer, 25)
 
 		fc.Blocks = append(fc.Blocks, newBlock)
+	}
+
+	// Extend QRouter if it exists — add a new expert slot for the new block.
+	if fc.QRouter != nil {
+		fc.QRouter.ExpertPhases = append(fc.QRouter.ExpertPhases, 0)
+		fc.QRouter.ExpertAmps = append(fc.QRouter.ExpertAmps, 128)
+		fc.QRouter.ExpertEmbeddings = append(fc.QRouter.ExpertEmbeddings, NewSDR(fc.Config.SDRSize))
+		fc.QRouter.UsageCounts = append(fc.QRouter.UsageCounts, 0)
 	}
 
 	totalParams := len(fc.Blocks) * fc.Blocks[0].StoredParameters()
@@ -281,12 +289,17 @@ func (fc *FractalCortex) Save(dataDir string) error {
 		return fmt.Errorf("fractal_cortex save mkdir: %w", err)
 	}
 
-	// Save metadata JSON
+	// Save metadata JSON — includes quantum router state.
+	type qRouterMeta struct {
+		Phases []uint8 `json:"phases"`
+		Amps   []uint8 `json:"amps"`
+	}
 	type fcMeta struct {
-		BlocksCount int `json:"blocks_count"`
-		NumLayers   int `json:"num_layers"`
-		Dim         int `json:"dim"`
-		TopK        int `json:"top_k"`
+		BlocksCount int          `json:"blocks_count"`
+		NumLayers   int          `json:"num_layers"`
+		Dim         int          `json:"dim"`
+		TopK        int          `json:"top_k"`
+		QRouter     *qRouterMeta `json:"qrouter,omitempty"`
 	}
 	
 	numLayers := 24
@@ -303,6 +316,14 @@ func (fc *FractalCortex) Save(dataDir string) error {
 		NumLayers:   numLayers,
 		Dim:         dim,
 		TopK:        topK,
+	}
+
+	// Persist QRouter state so learned phases/amps survive restart.
+	if fc.QRouter != nil {
+		meta.QRouter = &qRouterMeta{
+			Phases: fc.QRouter.ExpertPhases,
+			Amps:   fc.QRouter.ExpertAmps,
+		}
 	}
 
 	metaData, err := json.MarshalIndent(meta, "", "  ")
@@ -354,11 +375,16 @@ func (fc *FractalCortex) Load(dataDir string) error {
 		return fmt.Errorf("fractal_cortex load meta: %w", err)
 	}
 
+	type qRouterMeta struct {
+		Phases []uint8 `json:"phases"`
+		Amps   []uint8 `json:"amps"`
+	}
 	type fcMeta struct {
-		BlocksCount int `json:"blocks_count"`
-		NumLayers   int `json:"num_layers"`
-		Dim         int `json:"dim"`
-		TopK        int `json:"top_k"`
+		BlocksCount int          `json:"blocks_count"`
+		NumLayers   int          `json:"num_layers"`
+		Dim         int          `json:"dim"`
+		TopK        int          `json:"top_k"`
+		QRouter     *qRouterMeta `json:"qrouter,omitempty"`
 	}
 
 	var meta fcMeta
@@ -384,7 +410,6 @@ func (fc *FractalCortex) Load(dataDir string) error {
 	for id := 0; id < meta.BlocksCount; id++ {
 		blockDir := filepath.Join(fcDir, fmt.Sprintf("block_%d", id))
 		
-		// Load the 5 ternary layers
 		featureData, err := os.ReadFile(filepath.Join(blockDir, "feature.nxt1"))
 		if err != nil {
 			return fmt.Errorf("load feature layer file: %w", err)
@@ -435,7 +460,6 @@ func (fc *FractalCortex) Load(dataDir string) error {
 		}
 		outprojLayer.Engine = fc.Engine
 
-		// Reconstruct SharedCortexStack
 		block := &SharedCortexStack{
 			SharedFeatureLayer: featureLayer,
 			SharedOutputLayer:  outputLayer,
@@ -446,7 +470,6 @@ func (fc *FractalCortex) Load(dataDir string) error {
 			Scans:              make([]*LinearScanLayer, meta.NumLayers),
 		}
 
-		// Fill in attention caches and temporal states
 		contextLen := 50
 		decayRate := uint8(64)
 		for i := 0; i < meta.NumLayers; i++ {
@@ -467,6 +490,20 @@ func (fc *FractalCortex) Load(dataDir string) error {
 	}
 
 	fc.Blocks = loadedBlocks
+
+	// Restore QRouter state from saved metadata.
+	if meta.QRouter != nil && fc.Config.EnableQuantumInspired {
+		fc.QRouter = NewQuantumRouter(len(fc.Blocks), fc.Config.SDRSize, 2)
+		// Restore learned phases and amplitudes (capped to actual block count)
+		for i := 0; i < len(fc.Blocks) && i < len(meta.QRouter.Phases); i++ {
+			fc.QRouter.ExpertPhases[i] = meta.QRouter.Phases[i]
+		}
+		for i := 0; i < len(fc.Blocks) && i < len(meta.QRouter.Amps); i++ {
+			fc.QRouter.ExpertAmps[i] = meta.QRouter.Amps[i]
+		}
+		fc.Journal = NewPlasticityJournal()
+	}
+
 	return nil
 }
 
@@ -551,6 +588,8 @@ func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
 // MergeJournal applies all pending PlasticityJournal entries into the
 // ternary weights of the cortex blocks. Called during Sleep().
 // Returns the total number of weight changes applied.
+// Only clears entries that were successfully applied. Unapplied entries
+// (for non-existent blocks/layers) are preserved for the next cycle.
 func (fc *FractalCortex) MergeJournal() int {
 	if fc.Journal == nil || fc.Journal.Size() == 0 {
 		return 0
@@ -562,8 +601,11 @@ func (fc *FractalCortex) MergeJournal() int {
 		totalApplied += fc.Journal.Merge(block.SharedOutputLayer, blockID, "output")
 	}
 
-	// Clear any remaining entries that didn't match any block/layer.
-	fc.Journal.Clear()
+	// Only clear if all entries were applied. If some remain unmatched,
+	// keep them for the next Sleep() cycle when more blocks may exist.
+	if totalApplied > 0 {
+		fc.Journal.ClearApplied()
+	}
 
 	return totalApplied
 }
