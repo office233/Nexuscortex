@@ -1,21 +1,53 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"nexus-cortex/cortex"
 )
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Comprehensive test case — extends the cortex.TestCase with category + expected
+// ──────────────────────────────────────────────────────────────────────────────
+
+type ComprehensiveCase struct {
+	Input    string `json:"input"`
+	Expected string `json:"expected"`
+	Category string `json:"category"` // recall | generalization | wikipedia | reasoning
+}
+
+// CategoryStats tracks per-category performance metrics.
+type CategoryStats struct {
+	Total        int
+	FullMatch    int
+	PartialMatch int
+	Failed       int
+	SumOverlap   float64
+}
+
+// CaseResult holds the outcome of running a single ComprehensiveCase.
+type CaseResult struct {
+	Case       ComprehensiveCase
+	Response   string
+	Score      string  // "FULL", "PARTIAL", "FAIL"
+	Overlap    float64 // word overlap ratio 0.0–1.0
+	Confidence uint8
+}
+
 func main() {
 	dataDir := flag.String("data-dir", "./data/cortex", "Path to organism data directory")
 	seed := flag.Int64("seed", 42, "Random seed for deterministic runs")
 	fresh := flag.Bool("fresh", false, "Start with a new organism (ignore saved state)")
-	evalPath := flag.String("eval", "", "Optional path to a single JSONL eval suite")
+	evalPath := flag.String("eval", "", "Path to a comprehensive JSONL eval file")
+	legacy := flag.Bool("legacy", false, "Run legacy 3-suite eval (basic_recall, no_echo, generalization)")
 	flag.Parse()
 
 	cfg := cortex.DefaultConfig()
@@ -25,16 +57,328 @@ func main() {
 	cfg.Demo = false
 	cfg.NoSave = true
 
+	// Pre-warm: load organism once to verify state is valid.
 	loadOrganism(cfg, rand.New(rand.NewSource(cfg.Seed)), true)
 	newOrganism := func() *cortex.Organism {
 		return loadOrganism(cfg, rand.New(rand.NewSource(cfg.Seed)), false)
 	}
 
+	// ── Legacy mode (unchanged behaviour) ────────────────────────────────
+	if *legacy {
+		runLegacy(newOrganism, *evalPath)
+		return
+	}
+
+	// ── Comprehensive mode ───────────────────────────────────────────────
+	path := *evalPath
+	if path == "" {
+		path = filepath.Join(".", "data", "evals", "comprehensive.jsonl")
+	}
+	cases, err := loadComprehensiveSuite(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Loaded %d comprehensive test cases from %s\n\n", len(cases), path)
+
+	results := runComprehensive(cases, newOrganism)
+	printComprehensiveReport(results)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Comprehensive eval logic
+// ─────────────────────────────────────────────────────────────────────────────
+
+func loadComprehensiveSuite(path string) ([]ComprehensiveCase, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open comprehensive suite %s: %w", path, err)
+	}
+	defer f.Close()
+
+	var cases []ComprehensiveCase
+	scanner := bufio.NewScanner(f)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		var cc ComprehensiveCase
+		if err := json.Unmarshal([]byte(line), &cc); err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		if cc.Category == "" {
+			cc.Category = "unknown"
+		}
+		cases = append(cases, cc)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan: %w", err)
+	}
+	return cases, nil
+}
+
+func runComprehensive(cases []ComprehensiveCase, newOrg func() *cortex.Organism) []CaseResult {
+	results := make([]CaseResult, 0, len(cases))
+	for i, cc := range cases {
+		org := newOrg()
+		response := org.Process(cc.Input)
+		conf := org.Prefrontal.GetConfidence()
+		if response == "(no confident response)" {
+			conf = 0
+		}
+
+		overlap := wordOverlap(response, cc.Expected)
+		score := "FAIL"
+		if overlap >= 0.80 {
+			score = "FULL"
+		} else if overlap > 0.20 {
+			score = "PARTIAL"
+		}
+
+		results = append(results, CaseResult{
+			Case:       cc,
+			Response:   response,
+			Score:      score,
+			Overlap:    overlap,
+			Confidence: conf,
+		})
+
+		icon := "✗"
+		if score == "FULL" {
+			icon = "✓"
+		} else if score == "PARTIAL" {
+			icon = "~"
+		}
+		fmt.Printf("  [%s] %2d. %-7s | %-50s → overlap=%.0f%%\n",
+			icon, i+1, fmt.Sprintf("[%s]", cc.Category), truncate(cc.Input, 50), overlap*100)
+	}
+	fmt.Println()
+	return results
+}
+
+// wordOverlap computes the ratio of expected words found in the response.
+func wordOverlap(response, expected string) float64 {
+	expectedWords := tokenize(expected)
+	if len(expectedWords) == 0 {
+		return 1.0 // vacuously true
+	}
+	responseLower := strings.ToLower(response)
+	matched := 0
+	for _, w := range expectedWords {
+		if strings.Contains(responseLower, strings.ToLower(w)) {
+			matched++
+		}
+	}
+	return float64(matched) / float64(len(expectedWords))
+}
+
+func tokenize(s string) []string {
+	raw := strings.Fields(strings.ToLower(s))
+	words := make([]string, 0, len(raw))
+	for _, w := range raw {
+		w = strings.Trim(w, ".,;:!?\"'()[]{}")
+		if w != "" {
+			words = append(words, w)
+		}
+	}
+	return words
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Comprehensive report
+// ─────────────────────────────────────────────────────────────────────────────
+
+func printComprehensiveReport(results []CaseResult) {
+	// ── Failures detail ──────────────────────────────────────────────────
+	fmt.Println("FAILED / PARTIAL TEST CASES")
+	fmt.Println(strings.Repeat("─", 100))
+	hasIssues := false
+	for _, r := range results {
+		if r.Score == "FULL" {
+			continue
+		}
+		hasIssues = true
+		fmt.Printf("  Category: %s\n", r.Case.Category)
+		fmt.Printf("  Input:    %q\n", r.Case.Input)
+		fmt.Printf("  Expected: %q\n", r.Case.Expected)
+		fmt.Printf("  Got:      %q  (conf: %d, overlap: %.0f%%, score: %s)\n",
+			r.Response, r.Confidence, r.Overlap*100, r.Score)
+		fmt.Println(strings.Repeat("─", 100))
+	}
+	if !hasIssues {
+		fmt.Println("  None — all test cases passed!")
+		fmt.Println(strings.Repeat("─", 100))
+	}
+
+	// ── Per-category breakdown ───────────────────────────────────────────
+	cats := buildCategoryStats(results)
+	orderedCats := []string{"recall", "generalization", "wikipedia", "reasoning"}
+	// Add any categories present but not in the predefined list.
+	for cat := range cats {
+		found := false
+		for _, o := range orderedCats {
+			if o == cat {
+				found = true
+				break
+			}
+		}
+		if !found {
+			orderedCats = append(orderedCats, cat)
+		}
+	}
+
+	fmt.Println("\nPER-CATEGORY SCOREBOARD")
+	fmt.Printf("  %-18s %6s %6s %8s %6s %10s\n",
+		"Category", "Total", "Full", "Partial", "Fail", "Avg Ovlp")
+	fmt.Println("  " + strings.Repeat("─", 58))
+
+	var grandTotal, grandFull, grandPartial, grandFail int
+	var grandOverlap float64
+	for _, cat := range orderedCats {
+		s, ok := cats[cat]
+		if !ok {
+			continue
+		}
+		avg := 0.0
+		if s.Total > 0 {
+			avg = s.SumOverlap / float64(s.Total) * 100
+		}
+		fmt.Printf("  %-18s %6d %6d %8d %6d %9.1f%%\n",
+			cat, s.Total, s.FullMatch, s.PartialMatch, s.Failed, avg)
+		grandTotal += s.Total
+		grandFull += s.FullMatch
+		grandPartial += s.PartialMatch
+		grandFail += s.Failed
+		grandOverlap += s.SumOverlap
+	}
+	fmt.Println("  " + strings.Repeat("─", 58))
+	grandAvg := 0.0
+	if grandTotal > 0 {
+		grandAvg = grandOverlap / float64(grandTotal) * 100
+	}
+	fmt.Printf("  %-18s %6d %6d %8d %6d %9.1f%%\n",
+		"TOTAL", grandTotal, grandFull, grandPartial, grandFail, grandAvg)
+
+	// ── Confidence calibration ───────────────────────────────────────────
+	fmt.Println("\nCONFIDENCE CALIBRATION")
+	type confBucket struct {
+		cat                            string
+		avgAll, avgFull, avgFail float64
+	}
+	var buckets []confBucket
+	for _, cat := range orderedCats {
+		s, ok := cats[cat]
+		if !ok {
+			continue
+		}
+		var sumAll, sumFull, sumFail uint64
+		var cntFull, cntFail int
+		for _, r := range results {
+			if r.Case.Category != cat {
+				continue
+			}
+			sumAll += uint64(r.Confidence)
+			if r.Score == "FULL" {
+				sumFull += uint64(r.Confidence)
+				cntFull++
+			} else {
+				sumFail += uint64(r.Confidence)
+				cntFail++
+			}
+		}
+		b := confBucket{cat: cat}
+		if s.Total > 0 {
+			b.avgAll = float64(sumAll) / float64(s.Total)
+		}
+		if cntFull > 0 {
+			b.avgFull = float64(sumFull) / float64(cntFull)
+		}
+		if cntFail > 0 {
+			b.avgFail = float64(sumFail) / float64(cntFail)
+		}
+		buckets = append(buckets, b)
+	}
+	fmt.Printf("  %-18s %8s %8s %8s\n", "Category", "Avg", "Full", "Fail")
+	fmt.Println("  " + strings.Repeat("─", 46))
+	for _, b := range buckets {
+		fmt.Printf("  %-18s %8.1f %8.1f %8.1f\n", b.cat, b.avgAll, b.avgFull, b.avgFail)
+	}
+
+	// ── Final composite score ────────────────────────────────────────────
+	score := compositeScore(cats)
+	fmt.Printf("\n══════════════════════════════════════════════════════════\n")
+	fmt.Printf("  NEXUS COMPREHENSIVE SCORE:  %.1f / 100.0\n", score)
+	fmt.Printf("══════════════════════════════════════════════════════════\n")
+}
+
+func buildCategoryStats(results []CaseResult) map[string]*CategoryStats {
+	cats := make(map[string]*CategoryStats)
+	for _, r := range results {
+		s, ok := cats[r.Case.Category]
+		if !ok {
+			s = &CategoryStats{}
+			cats[r.Case.Category] = s
+		}
+		s.Total++
+		s.SumOverlap += r.Overlap
+		switch r.Score {
+		case "FULL":
+			s.FullMatch++
+		case "PARTIAL":
+			s.PartialMatch++
+		default:
+			s.Failed++
+		}
+	}
+	return cats
+}
+
+// compositeScore computes a weighted overall score.
+// Full match = 1.0, partial = 0.5, fail = 0.
+// Categories are equally weighted.
+func compositeScore(cats map[string]*CategoryStats) float64 {
+	if len(cats) == 0 {
+		return 0
+	}
+	// Sort categories for determinism.
+	keys := make([]string, 0, len(cats))
+	for k := range cats {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var catScoreSum float64
+	for _, k := range keys {
+		s := cats[k]
+		if s.Total == 0 {
+			continue
+		}
+		points := float64(s.FullMatch) + float64(s.PartialMatch)*0.5
+		catScoreSum += (points / float64(s.Total)) * 100.0
+	}
+	return catScoreSum / float64(len(keys))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy mode — preserved for backward compatibility
+// ─────────────────────────────────────────────────────────────────────────────
+
+func runLegacy(newOrganism func() *cortex.Organism, singlePath string) {
 	var suites []cortex.SuiteResult
-	if *evalPath != "" {
-		cases := mustLoadSuite(*evalPath)
-		fmt.Printf("Loaded %d test cases from %s.\n\n", len(cases), *evalPath)
-		suites = append(suites, cortex.RunSuiteIsolated(filepath.Base(*evalPath), cases, newOrganism))
+	if singlePath != "" {
+		cases := mustLoadSuite(singlePath)
+		fmt.Printf("Loaded %d test cases from %s.\n\n", len(cases), singlePath)
+		suites = append(suites, cortex.RunSuiteIsolated(filepath.Base(singlePath), cases, newOrganism))
 	} else {
 		evalsDir := filepath.Join(".", "data", "evals")
 		recallPath := filepath.Join(evalsDir, "basic_recall.jsonl")
@@ -55,8 +399,7 @@ func main() {
 			cortex.RunSuiteIsolated("Held-out Generalization", generalizationCases, newOrganism),
 		)
 	}
-
-	printReport(suites)
+	printLegacyReport(suites)
 }
 
 func loadOrganism(cfg cortex.Config, rng *rand.Rand, verbose bool) *cortex.Organism {
@@ -90,7 +433,7 @@ func mustLoadSuite(path string) []cortex.TestCase {
 	return cases
 }
 
-func printReport(suites []cortex.SuiteResult) {
+func printLegacyReport(suites []cortex.SuiteResult) {
 	fmt.Println("FAILED TEST CASES")
 	fmt.Println(strings.Repeat("-", 80))
 	hasFailures := false
@@ -128,10 +471,10 @@ func printReport(suites []cortex.SuiteResult) {
 			suite.Name, suite.AvgConfidence, suite.AvgPassedConf, suite.AvgFailedConf)
 	}
 
-	fmt.Printf("\nNEXUS CAPABILITY SCORE: %.1f / 100.0\n", capabilityScore(suites))
+	fmt.Printf("\nNEXUS CAPABILITY SCORE: %.1f / 100.0\n", legacyCapabilityScore(suites))
 }
 
-func capabilityScore(suites []cortex.SuiteResult) float64 {
+func legacyCapabilityScore(suites []cortex.SuiteResult) float64 {
 	var total, passed, echoed int
 	for _, suite := range suites {
 		total += suite.Total
@@ -142,6 +485,6 @@ func capabilityScore(suites []cortex.SuiteResult) float64 {
 		return 0
 	}
 	passRate := float64(passed) / float64(total) * 100.0
-	antiEchoRate := 100.0 - (float64(echoed) / float64(total) * 100.0)
+	antiEchoRate := 100.0 - (float64(echoed)/float64(total)*100.0)
 	return (passRate * 0.8) + (antiEchoRate * 0.2)
 }

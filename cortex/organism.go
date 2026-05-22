@@ -281,6 +281,20 @@ func (o *Organism) Process(input string) string {
 		memoryText = strings.TrimSpace(mem.Context)
 	}
 
+	// Keyword-based fallback: if SDR recall failed or produced a
+	// low-confidence match, try lexical keyword retrieval. This
+	// compensates for the false-overlap problem of union-encoded SDRs
+	// on long or keyword-rich sentences.
+	if !memoryUsed || memorySimilarity < o.Config.PrefrontalConfThreshold {
+		inputTokens := Tokenize(input)
+		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, 1, combinedSDR); kwOK && kwScore > memorySimilarity {
+			responseSDR = kwMem.Output
+			memoryUsed = true
+			memorySimilarity = kwScore
+			memoryText = strings.TrimSpace(kwMem.Context)
+		}
+	}
+
 	var confidence uint8
 	if memoryUsed {
 		// Bypass Prefrontal refinement to prevent scrambling of deterministic facts retrieved from episodic memory.
@@ -334,7 +348,7 @@ func (o *Organism) Process(input string) string {
 	if sameText(responseText, input) {
 		responseText = ""
 	}
-	if responseText != "" && confidence < o.Config.PrefrontalConfThreshold && !(memoryUsed && memorySimilarity >= o.Config.PrefrontalConfThreshold) {
+	if responseText != "" && confidence < o.Config.PrefrontalConfThreshold {
 		responseText = ""
 	}
 

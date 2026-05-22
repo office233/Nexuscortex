@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -46,6 +47,43 @@ type Hippocampus struct {
 	ReconsolidationThresh uint8
 	InitialStrength       uint8
 	LtpThreshold          uint8
+
+	// keywordIndex maps lowercased content keywords to the indices of
+	// memories whose Context contains that keyword. This provides
+	// lexical recall that avoids the false-overlap problem of
+	// union-based SDR encoding on long sentences.
+	keywordIndex map[string][]int
+}
+
+// hippoStopWords contains common function words and punctuation that
+// should be excluded from the keyword index. These carry little
+// discriminative meaning for memory retrieval.
+var hippoStopWords = map[string]bool{
+	"what": true, "is": true, "the": true, "a": true, "an": true,
+	"of": true, "in": true, "to": true, "and": true, "or": true,
+	"for": true, "that": true, "this": true, "it": true, "are": true,
+	"was": true, "were": true, "be": true, "been": true, "how": true,
+	"who": true, "which": true, "?": true, ".": true,
+}
+
+// extractKeywords tokenises a context string and returns the unique,
+// lowercased content words (stop words removed).
+func extractKeywords(context string) []string {
+	tokens := Tokenize(context)
+	seen := make(map[string]bool, len(tokens))
+	var kw []string
+	for _, t := range tokens {
+		t = strings.ToLower(t)
+		if hippoStopWords[t] || t == "" {
+			continue
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		kw = append(kw, t)
+	}
+	return kw
 }
 
 // NewHippocampus creates a hippocampus with the given config.
@@ -56,6 +94,7 @@ func NewHippocampus(cfg Config) *Hippocampus {
 		ReconsolidationThresh: cfg.HippoReconsolidationThresh,
 		InitialStrength:       cfg.HippoInitialStrength,
 		LtpThreshold:          cfg.HippoLtpThreshold,
+		keywordIndex:          make(map[string][]int),
 	}
 }
 
@@ -75,6 +114,12 @@ func NewHippocampus(cfg Config) *Hippocampus {
 //
 // The similarity threshold, initial strength, and LTP threshold are dynamic.
 func (h *Hippocampus) Store(input SDR, output SDR, context string) {
+	// Ensure the keyword index map is initialised (may be nil after
+	// deserialisation from an older file format).
+	if h.keywordIndex == nil {
+		h.keywordIndex = make(map[string][]int)
+	}
+
 	// Check for an existing similar memory to reconsolidate.
 	for i := range h.Memories {
 		sim := h.Memories[i].Input.Similarity(input)
@@ -83,9 +128,16 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 			if h.Memories[i].Strength < 255 {
 				h.Memories[i].Strength++
 			}
+			oldContext := h.Memories[i].Context
 			h.Memories[i].Output = output.Clone()
 			h.Memories[i].Context = context
 			h.Memories[i].Age = 0
+
+			// Update keyword index: remove old keywords, add new.
+			if oldContext != context {
+				h.removeKeywordsForIndex(i, oldContext)
+				h.addKeywordsForIndex(i, context)
+			}
 			return
 		}
 	}
@@ -98,6 +150,9 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 				weakest = i
 			}
 		}
+		// Remove evicted memory's keywords.
+		h.removeKeywordsForIndex(weakest, h.Memories[weakest].Context)
+
 		// Replace the weakest entry in-place.
 		h.Memories[weakest] = Memory{
 			Input:    input.Clone(),
@@ -106,9 +161,12 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 			Age:      0,
 			Context:  context,
 		}
+		// Add new memory's keywords.
+		h.addKeywordsForIndex(weakest, context)
 		return
 	}
 
+	idx := len(h.Memories)
 	h.Memories = append(h.Memories, Memory{
 		Input:    input.Clone(),
 		Output:   output.Clone(),
@@ -116,6 +174,7 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 		Age:      0,
 		Context:  context,
 	})
+	h.addKeywordsForIndex(idx, context)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -152,6 +211,112 @@ func (h *Hippocampus) RecallScored(query SDR, threshold uint8) (Memory, uint8, b
 		return Memory{}, 0, false
 	}
 	return h.Memories[bestIdx], bestSim, true
+}
+
+// RecallByKeywords performs keyword-based retrieval as a complement to
+// SDR similarity matching. It finds memories whose Context shares the
+// most keywords with the query, and among ties picks the one with the
+// highest SDR similarity to the query.
+//
+// threshold is the minimum number of shared keywords required for a
+// match. Returns the best memory, a combined score (0-255), and
+// whether a match was found.
+func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query SDR) (Memory, uint8, bool) {
+	if len(keywords) == 0 || len(h.Memories) == 0 {
+		return Memory{}, 0, false
+	}
+	if h.keywordIndex == nil {
+		return Memory{}, 0, false
+	}
+
+	// Count how many query keywords each memory matches.
+	hits := make(map[int]int) // memoryIndex → keyword overlap count
+	for _, kw := range keywords {
+		kw = strings.ToLower(kw)
+		if hippoStopWords[kw] {
+			continue
+		}
+		for _, idx := range h.keywordIndex[kw] {
+			hits[idx]++
+		}
+	}
+
+	bestIdx := -1
+	bestHits := 0
+	var bestSim uint8
+
+	for idx, count := range hits {
+		if count < threshold {
+			continue
+		}
+		sim := h.Memories[idx].Input.Similarity(query)
+		if count > bestHits || (count == bestHits && sim > bestSim) {
+			bestIdx = idx
+			bestHits = count
+			bestSim = sim
+		}
+	}
+
+	if bestIdx < 0 {
+		return Memory{}, 0, false
+	}
+
+	// Compute a combined score: keyword fraction (0-200) + SDR sim (0-55).
+	// This biases towards keyword overlap while still using SDR as a
+	// tiebreaker.
+	keywordCount := len(keywords)
+	if keywordCount == 0 {
+		keywordCount = 1
+	}
+	kwScore := (bestHits * 200) / keywordCount
+	if kwScore > 200 {
+		kwScore = 200
+	}
+	sdrPart := int(bestSim) * 55 / 255
+	combined := kwScore + sdrPart
+	if combined > 255 {
+		combined = 255
+	}
+
+	return h.Memories[bestIdx], uint8(combined), true
+}
+
+// addKeywordsForIndex adds the keywords extracted from context to the
+// keyword index, pointing at the given memory index.
+func (h *Hippocampus) addKeywordsForIndex(idx int, context string) {
+	for _, kw := range extractKeywords(context) {
+		h.keywordIndex[kw] = append(h.keywordIndex[kw], idx)
+	}
+}
+
+// removeKeywordsForIndex removes entries for the given memory index
+// from the keyword index based on the old context string.
+func (h *Hippocampus) removeKeywordsForIndex(idx int, context string) {
+	for _, kw := range extractKeywords(context) {
+		indices := h.keywordIndex[kw]
+		for j := 0; j < len(indices); j++ {
+			if indices[j] == idx {
+				indices[j] = indices[len(indices)-1]
+				indices = indices[:len(indices)-1]
+				break
+			}
+		}
+		if len(indices) == 0 {
+			delete(h.keywordIndex, kw)
+		} else {
+			h.keywordIndex[kw] = indices
+		}
+	}
+}
+
+// RebuildKeywordIndex reconstructs the keyword index from all stored
+// memories. Called after loading from disk or after consolidation
+// (which may delete and reorder memories).
+func (h *Hippocampus) RebuildKeywordIndex() {
+	h.keywordIndex = make(map[string][]int, len(h.Memories))
+	for i := range h.Memories {
+		h.addKeywordsForIndex(i, h.Memories[i].Context)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -203,6 +368,9 @@ func (h *Hippocampus) Consolidate() {
 			h.Memories[i].Strength--
 		}
 	}
+
+	// Rebuild the keyword index because pruning changed memory indices.
+	h.RebuildKeywordIndex()
 }
 
 // Size returns the number of memories currently stored.
@@ -368,6 +536,10 @@ func LoadHippocampus(path string) (*Hippocampus, error) {
 		}
 		m.Context = string(ctxBuf)
 	}
+
+	// Rebuild the keyword index from the loaded memories.
+	h.RebuildKeywordIndex()
+
 	return h, nil
 }
 
