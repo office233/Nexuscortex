@@ -369,3 +369,79 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 
 	return b.Brain.formatOutput(generated)
 }
+
+// GenerateWithTransformer uses the MiniTransformer and BPETokenizer to
+// produce fluent text via proper autoregressive language modeling.
+//
+// This is Broca 2.0's primary generation path. It:
+//  1. Tokenizes context + memory text via BPE
+//  2. Runs the transformer forward pass to get next-token probabilities
+//  3. Samples with temperature modulated by the Prefrontal confidence
+//  4. Detokenizes the output back to text
+//
+// Falls back to empty string if transformer or tokenizer is nil.
+func (b *Broca) GenerateWithTransformer(
+	transformer *MiniTransformer,
+	tokenizer *BPETokenizer,
+	contextWords []string,
+	memoryContext string,
+	confidence uint8,
+	maxTokens int,
+) string {
+	if transformer == nil || tokenizer == nil || len(contextWords) == 0 || maxTokens <= 0 {
+		return ""
+	}
+
+	// Build prompt from context + memory
+	var prompt strings.Builder
+	if memoryContext != "" {
+		prompt.WriteString(memoryContext)
+		prompt.WriteString(" | ")
+	}
+	prompt.WriteString(strings.Join(contextWords, " "))
+
+	// Tokenize with BPE (no special tokens — we add BOS manually)
+	promptIDs := tokenizer.Encode(prompt.String())
+	if len(promptIDs) == 0 {
+		return ""
+	}
+
+	// Prepend BOS token
+	input := make([]int, 0, len(promptIDs)+1)
+	input = append(input, tokenizer.BosID())
+	input = append(input, promptIDs...)
+
+	// Temperature modulated by confidence:
+	// High confidence → low temperature (more deterministic)
+	// Low confidence → high temperature (more exploratory)
+	temperature := float32(1.0)
+	if confidence > 200 {
+		temperature = 0.5
+	} else if confidence > 150 {
+		temperature = 0.7
+	} else if confidence > 100 {
+		temperature = 0.9
+	} else if confidence < 50 {
+		temperature = 1.3
+	}
+
+	// Generate
+	outputIDs := transformer.Generate(input, maxTokens, temperature, 40)
+
+	// Extract only the generated part (remove prompt)
+	if len(outputIDs) <= len(input) {
+		return ""
+	}
+	generatedIDs := outputIDs[len(input):]
+
+	// Decode back to text
+	text := tokenizer.Decode(generatedIDs)
+	text = strings.TrimSpace(text)
+
+	if text == "" || text == "<UNK>" {
+		return ""
+	}
+
+	return text
+}
+

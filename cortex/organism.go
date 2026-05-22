@@ -75,6 +75,12 @@ type Organism struct {
 	// The massive, infinitely scaling parameter engine
 	FractalCortex *FractalCortex // ALBERT-style shared stack (24× compression)
 
+	// Broca 2.0 — transformer-based language model (optional).
+	// When both are non-nil, Broca uses the transformer for generation.
+	// When nil, falls back to Broca 1.0 (associative chain walker).
+	Transformer *MiniTransformer // Autoregressive language model
+	Tokenizer   *BPETokenizer   // BPE subword tokenizer
+
 	// Body systems — sensory input, motor output, biological timing.
 	Sensory *SensorySystem // Multi-channel sensory processing
 	Motor   *MotorSystem   // Output filtering & queuing
@@ -391,9 +397,24 @@ func (o *Organism) Process(input string) string {
 	}
 
 	// ── 5. SPEAK (Broca) ─────────────────────────────────────────
+	// Priority 0: Broca 2.0 — Transformer-based autoregressive generation
+	// Uses BPE tokenizer + trained MiniTransformer for fluent text.
+	if o.Transformer != nil && o.Tokenizer != nil && len(understanding.Words) > 0 {
+		mem := ""
+		if memoryUsed && memoryText != "" {
+			mem = memoryText
+		}
+		responseText = o.Broca.GenerateWithTransformer(
+			o.Transformer, o.Tokenizer,
+			understanding.Words, mem,
+			confidence, o.Config.MaxGenWords,
+		)
+	}
+
+	// Priority 1: Broca 1.0 — FractalCortex autoregressive (SDR-based)
 	// Generate a response autoregressively through FractalCortex ternary layers.
 	// If Hippocampus retrieved a memory, inject it as context (RAG-style).
-	if o.FractalCortex != nil && len(understanding.Words) > 0 {
+	if responseText == "" && o.FractalCortex != nil && len(understanding.Words) > 0 {
 		contextWords := make([]string, 0, len(understanding.Words)+10)
 		if memoryUsed && memoryText != "" {
 			// RAG context injection
@@ -1098,6 +1119,25 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		fmt.Println("[FractalCortex] Successfully restored BitNet weights from disk.")
 	}
 
+	// 8. Broca 2.0 — Load BPE tokenizer and MiniTransformer (optional)
+	var bpeTokenizer *BPETokenizer
+	var miniTransformer *MiniTransformer
+
+	tokenizerPath := filepath.Join(cfg.DataDir, "tokenizer.json")
+	if loadedTok, err := LoadBPETokenizer(tokenizerPath); err == nil {
+		bpeTokenizer = loadedTok
+		fmt.Printf("[Broca 2.0] BPE tokenizer loaded (vocab: %d, merges: %d)\n",
+			loadedTok.ActualVocabSize(), len(loadedTok.Merges))
+
+		// Create transformer matching tokenizer vocab
+		tfCfg := DefaultTransformerConfig(loadedTok.ActualVocabSize())
+		miniTransformer = NewMiniTransformer(tfCfg, rng)
+		fmt.Printf("[Broca 2.0] MiniTransformer initialized (%d params)\n",
+			miniTransformer.ParamCount())
+	} else {
+		fmt.Println("[Broca 2.0] No tokenizer found, using Broca 1.0 fallback.")
+	}
+
 	o := &Organism{
 		Config:  cfg,
 		Vocab:   vocab,
@@ -1128,6 +1168,10 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 
 		// FractalCortex: Infinite growing MoC ALBERT layers
 		FractalCortex: fractalCortex,
+
+		// Broca 2.0: Transformer language model (nil if no tokenizer on disk)
+		Transformer: miniTransformer,
+		Tokenizer:   bpeTokenizer,
 
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),
