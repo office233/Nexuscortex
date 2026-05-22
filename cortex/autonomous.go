@@ -62,42 +62,38 @@ type AutonomousLearner struct {
 }
 
 // NewAutonomousLearner creates a new self-learning engine.
+// All seed topics, datasets, and tuning values are read from the organism's Config.
 func NewAutonomousLearner(org *Organism) *AutonomousLearner {
+	cfg := org.Config
+
+	interval := time.Duration(cfg.AutoLearnInterval) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	maxGaps := cfg.AutoMaxGapsPerCycle
+	if maxGaps <= 0 {
+		maxGaps = 3
+	}
+	hfRows := cfg.AutoHFRowsPerDS
+	if hfRows <= 0 {
+		hfRows = 20
+	}
+	langs := cfg.AutoSearchLangs
+	if len(langs) == 0 {
+		langs = []string{"en"}
+	}
+
 	return &AutonomousLearner{
-		Organism:   org,
-		Web:        NewWebLearner(),
-		Evaluator:  NewSelfEvaluator(),
-		MaxGaps:    1000,
-		LearnInterval:    30 * time.Second,
-		MaxGapsPerCycle:  3,
-		SearchLangs:      []string{"en", "ro"},
-		HFRowsPerDataset: 20,
-		SeedTopics: []string{
-			// Science
-			"photosynthesis", "DNA", "evolution", "gravity", "atom",
-			"quantum mechanics", "relativity", "cell biology",
-			// Math
-			"algebra", "geometry", "calculus", "probability",
-			"prime number", "fibonacci sequence",
-			// Technology
-			"artificial intelligence", "neural network", "computer science",
-			"algorithm", "machine learning", "programming language",
-			// History
-			"Roman Empire", "Renaissance", "World War II",
-			"Ancient Egypt", "Industrial Revolution",
-			// Geography
-			"solar system", "continent", "ocean", "climate",
-			// Language / Logic
-			"logic", "analogy", "metaphor", "reasoning",
-			// Romanian topics
-			"România", "București", "Carpați", "Dunărea",
-			"istoria României", "Mihai Eminescu",
-		},
-		SeedDatasets: []string{
-			"tatsu-lab/alpaca", // instruction-following
-			"gsm8k",           // math reasoning
-			"hellaswag",       // commonsense reasoning
-		},
+		Organism:         org,
+		Web:              NewWebLearner(),
+		Evaluator:        NewSelfEvaluator(),
+		MaxGaps:          1000,
+		LearnInterval:    interval,
+		MaxGapsPerCycle:  maxGaps,
+		SearchLangs:      langs,
+		HFRowsPerDataset: hfRows,
+		SeedTopics:       cfg.AutoSeedTopics,
+		SeedDatasets:     cfg.AutoSeedDatasets,
 	}
 }
 

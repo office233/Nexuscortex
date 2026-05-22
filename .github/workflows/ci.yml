@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
           go-version: 'stable'
           cache: true
@@ -36,3 +36,6 @@ jobs:
 
       - name: Static analysis
         run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+      - name: Security scan
+        run: go run github.com/securego/gosec/v2/cmd/gosec@latest -quiet ./...

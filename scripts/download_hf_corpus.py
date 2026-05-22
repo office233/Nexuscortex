@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Nexus Cortex — Hugging Face Corpus Downloader & Converter
+Nexus Cortex â€” Hugging Face Corpus Downloader & Converter
 
 Downloads datasets from Hugging Face and converts them to JSONL format
 compatible with cortex-train.
 
 Supported formats:
-  {"text": "..."}                          — passive sequential learning
-  {"instruction": "...", "response": "..."} — active Q&A learning
+  {"text": "..."}                          â€” passive sequential learning
+  {"instruction": "...", "response": "..."} â€” active Q&A learning
 
 Usage:
   python download_hf_corpus.py --all         # Download everything
@@ -34,7 +34,7 @@ from pathlib import Path
 CORPUS_DIR = Path(__file__).resolve().parent.parent / "data" / "corpus"
 
 def clean_text(text: str) -> str:
-    """Clean text for cortex training — remove wiki markup, extra whitespace."""
+    """Clean text for cortex training â€” remove wiki markup, extra whitespace."""
     if not text or not text.strip():
         return ""
     # Remove URLs
@@ -74,11 +74,11 @@ def download_wikipedia_ro(max_articles: int = 50000):
     from datasets import load_dataset
     
     output_path = CORPUS_DIR / "wikipedia_ro.jsonl"
-    print(f"\n📥 Downloading Romanian Wikipedia...")
+    print(f"\nđź“Ą Downloading Romanian Wikipedia...")
     print(f"   Target: {output_path}")
     print(f"   Max articles: {max_articles}")
     
-    ds = load_dataset("wikimedia/wikipedia", "20231101.ro", split="train", trust_remote_code=True)
+    ds = load_dataset("wikimedia/wikipedia", "20231101.ro", split="train", trust_remote_code=False)
     
     count = 0
     total_sentences = 0
@@ -100,10 +100,10 @@ def download_wikipedia_ro(max_articles: int = 50000):
             
             count += 1
             if count % 5000 == 0:
-                print(f"   📊 Processed {count} articles, {total_sentences} sentences...")
+                print(f"   đź“Š Processed {count} articles, {total_sentences} sentences...")
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"   ✅ Wikipedia RO: {count} articles → {total_sentences} sentences ({size_mb:.1f} MB)")
+    print(f"   âś… Wikipedia RO: {count} articles â†’ {total_sentences} sentences ({size_mb:.1f} MB)")
     return total_sentences
 
 
@@ -112,12 +112,12 @@ def download_wikipedia_en(max_articles: int = 100000):
     from datasets import load_dataset
     
     output_path = CORPUS_DIR / "wikipedia_en.jsonl"
-    print(f"\n📥 Downloading English Wikipedia (subset)...")
+    print(f"\nđź“Ą Downloading English Wikipedia (subset)...")
     print(f"   Target: {output_path}")
     print(f"   Max articles: {max_articles}")
     
     ds = load_dataset("wikimedia/wikipedia", "20231101.en", split="train", 
-                       trust_remote_code=True, streaming=True)
+                       trust_remote_code=False, streaming=True)
     
     count = 0
     total_sentences = 0
@@ -139,10 +139,10 @@ def download_wikipedia_en(max_articles: int = 100000):
             
             count += 1
             if count % 10000 == 0:
-                print(f"   📊 Processed {count} articles, {total_sentences} sentences...")
+                print(f"   đź“Š Processed {count} articles, {total_sentences} sentences...")
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"   ✅ Wikipedia EN: {count} articles → {total_sentences} sentences ({size_mb:.1f} MB)")
+    print(f"   âś… Wikipedia EN: {count} articles â†’ {total_sentences} sentences ({size_mb:.1f} MB)")
     return total_sentences
 
 
@@ -151,9 +151,9 @@ def download_alpaca():
     from datasets import load_dataset
     
     output_path = CORPUS_DIR / "alpaca.jsonl"
-    print(f"\n📥 Downloading Stanford Alpaca (52K instructions)...")
+    print(f"\nđź“Ą Downloading Stanford Alpaca (52K instructions)...")
     
-    ds = load_dataset("tatsu-lab/alpaca", split="train", trust_remote_code=True)
+    ds = load_dataset("tatsu-lab/alpaca", split="train", trust_remote_code=False)
     
     count = 0
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -181,7 +181,7 @@ def download_alpaca():
                 f.write(json.dumps(text_entry, ensure_ascii=False) + '\n')
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"   ✅ Alpaca: {count} instruction pairs ({size_mb:.1f} MB)")
+    print(f"   âś… Alpaca: {count} instruction pairs ({size_mb:.1f} MB)")
     return count
 
 
@@ -190,9 +190,9 @@ def download_dolly():
     from datasets import load_dataset
     
     output_path = CORPUS_DIR / "dolly.jsonl"
-    print(f"\n📥 Downloading Databricks Dolly (15K instructions)...")
+    print(f"\nđź“Ą Downloading Databricks Dolly (15K instructions)...")
     
-    ds = load_dataset("databricks/databricks-dolly-15k", split="train", trust_remote_code=True)
+    ds = load_dataset("databricks/databricks-dolly-15k", split="train", trust_remote_code=False)
     
     count = 0
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -219,7 +219,7 @@ def download_dolly():
                 f.write(json.dumps(text_entry, ensure_ascii=False) + '\n')
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"   ✅ Dolly: {count} instruction pairs ({size_mb:.1f} MB)")
+    print(f"   âś… Dolly: {count} instruction pairs ({size_mb:.1f} MB)")
     return count
 
 
@@ -228,10 +228,10 @@ def download_slimorca():
     from datasets import load_dataset
     
     output_path = CORPUS_DIR / "slimorca.jsonl"
-    print(f"\n📥 Downloading SlimOrca (518K instructions)...")
-    print(f"   ⚠️  This is a large dataset, may take a while...")
+    print(f"\nđź“Ą Downloading SlimOrca (518K instructions)...")
+    print(f"   âš ď¸Ź  This is a large dataset, may take a while...")
     
-    ds = load_dataset("Open-Orca/SlimOrca", split="train", trust_remote_code=True)
+    ds = load_dataset("Open-Orca/SlimOrca", split="train", trust_remote_code=False)
     
     count = 0
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -264,17 +264,17 @@ def download_slimorca():
                 f.write(json.dumps(text_entry, ensure_ascii=False) + '\n')
             
             if count % 50000 == 0:
-                print(f"   📊 Processed {count} conversations...")
+                print(f"   đź“Š Processed {count} conversations...")
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"   ✅ SlimOrca: {count} instruction pairs ({size_mb:.1f} MB)")
+    print(f"   âś… SlimOrca: {count} instruction pairs ({size_mb:.1f} MB)")
     return count
 
 
 def print_summary():
     """Print a summary of all corpus files."""
     print(f"\n{'='*60}")
-    print(f"📚 CORPUS SUMMARY — {CORPUS_DIR}")
+    print(f"đź“š CORPUS SUMMARY â€” {CORPUS_DIR}")
     print(f"{'='*60}")
     
     total_size = 0
@@ -286,7 +286,7 @@ def print_summary():
         total_size += size
         total_lines += lines
         size_mb = size / (1024 * 1024)
-        print(f"   📄 {f.name:<30} {lines:>10,} lines  {size_mb:>8.1f} MB")
+        print(f"   đź“„ {f.name:<30} {lines:>10,} lines  {size_mb:>8.1f} MB")
     
     total_mb = total_size / (1024 * 1024)
     print(f"{'='*60}")
@@ -317,9 +317,9 @@ def main():
         print("No dataset selected. Use --help for options, or --all to download everything.")
         return
     
-    print("╔══════════════════════════════════════════════════════╗")
-    print("║  🧠 NEXUS CORTEX — HUGGING FACE CORPUS DOWNLOADER  ║")
-    print("╚══════════════════════════════════════════════════════╝")
+    print("â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—")
+    print("â•‘  đź§  NEXUS CORTEX â€” HUGGING FACE CORPUS DOWNLOADER  â•‘")
+    print("â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•ť")
     
     start = time.time()
     
@@ -339,7 +339,7 @@ def main():
         download_slimorca()
     
     elapsed = time.time() - start
-    print(f"\n⏱️  Total download time: {elapsed/60:.1f} minutes")
+    print(f"\nâŹ±ď¸Ź  Total download time: {elapsed/60:.1f} minutes")
     
     print_summary()
 

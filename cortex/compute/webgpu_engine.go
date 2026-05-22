@@ -6,6 +6,7 @@ package compute
 
 import (
 	"fmt"
+	"time"
 	"unsafe"
 
 	"github.com/rajveermalviya/go-webgpu/wgpu"
@@ -303,18 +304,24 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 	encoder.Release()
 	cmdBuffer.Release()
 
-	// Map and wait
-	done := make(chan struct{})
+	// Map and wait with timeout to prevent infinite blocking
+	done := make(chan wgpu.BufferMapAsyncStatus, 1)
 	bufStaging.MapAsync(wgpu.MapMode_Read, 0, outputSizeBytes, func(status wgpu.BufferMapAsyncStatus) {
-		close(done)
+		done <- status
 	})
 
+	deadline := time.After(5 * time.Second)
 WaitLoop:
 	for {
 		e.device.Poll(true, nil)
 		select {
-		case <-done:
+		case status := <-done:
+			if status != wgpu.BufferMapAsyncStatus_Success {
+				return nil, fmt.Errorf("webgpu: map async failed with status %v", status)
+			}
 			break WaitLoop
+		case <-deadline:
+			return nil, fmt.Errorf("webgpu: map async timed out after 5s")
 		default:
 		}
 	}

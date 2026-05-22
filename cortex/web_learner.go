@@ -1,6 +1,6 @@
 package cortex
 
-// web_learner.go — Autonomous web knowledge acquisition for Nexus Cortex.
+// web_learner.go â€” Autonomous web knowledge acquisition for Nexus Cortex.
 //
 // Uses free, no-API-key-required sources:
 //   - Wikipedia REST API (summary + full text)
@@ -88,7 +88,7 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -197,9 +197,9 @@ func (wl *WebLearner) LearnFromResults(org *Organism, results []SearchResult) in
 	return learned
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // HuggingFace Datasets API integration
-// ──────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const (
 	hfDatasetSearchURL = "https://huggingface.co/api/datasets"
@@ -238,7 +238,7 @@ func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchR
 		return nil, fmt.Errorf("huggingface search returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 		return 0, fmt.Errorf("huggingface rows returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if err != nil {
 		return 0, err
 	}
@@ -326,11 +326,11 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 		question, answer := extractQAPair(row)
 
 		if question != "" && answer != "" {
-			// Instruction/response style — use QA learning
+			// Instruction/response style â€” use QA learning
 			org.LearnQA(question, answer)
 			learned++
 		} else if text := extractTextField(row); text != "" {
-			// Free-text style — passive learning
+			// Free-text style â€” passive learning
 			org.Brain.Learn(text)
 			tokens := Tokenize(text)
 			org.Wernicke.LearnContext(tokens)

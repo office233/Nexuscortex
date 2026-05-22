@@ -204,6 +204,18 @@ type Config struct {
 	SleepReplayCount     int   `json:"sleep_replay_count"`     // Memories replayed per sleep cycle
 	SleepInterleaveRatio int   `json:"sleep_interleave_ratio"` // Old memories per new memory during replay
 	SleepStabilityThresh uint8 `json:"sleep_stability_thresh"` // Min prefrontal stability to reinforce
+
+	// Autonomous Learning configuration — all previously hardcoded
+	AutoSeedTopics   []string `json:"auto_seed_topics,omitempty"`   // Initial curiosity topics
+	AutoSeedDatasets []string `json:"auto_seed_datasets,omitempty"` // HuggingFace dataset IDs
+	AutoSearchLangs  []string `json:"auto_search_langs,omitempty"`  // Wikipedia search languages
+	AutoHFRowsPerDS  int      `json:"auto_hf_rows_per_ds"`         // Max rows per HF dataset
+	AutoLearnInterval int     `json:"auto_learn_interval_secs"`    // Seconds between learn cycles
+	AutoMaxGapsPerCycle int   `json:"auto_max_gaps_per_cycle"`     // Max gaps to address per cycle
+
+	// Web server configuration
+	WebPort     string `json:"web_port,omitempty"`      // Dashboard port (default "8080")
+	WebBindAddr string `json:"web_bind_addr,omitempty"` // Bind address (default "127.0.0.1")
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -407,6 +419,35 @@ func DefaultConfig() Config {
 		SleepReplayCount:     10,
 		SleepInterleaveRatio: 2,
 		SleepStabilityThresh: 180,
+
+		// Autonomous Learning defaults (previously hardcoded in constructor)
+		AutoSeedTopics: []string{
+			"photosynthesis", "DNA", "evolution", "gravity", "atom",
+			"quantum mechanics", "relativity", "cell biology",
+			"algebra", "geometry", "calculus", "probability",
+			"prime number", "fibonacci sequence",
+			"artificial intelligence", "neural network", "computer science",
+			"algorithm", "machine learning", "programming language",
+			"Roman Empire", "Renaissance", "World War II",
+			"Ancient Egypt", "Industrial Revolution",
+			"solar system", "continent", "ocean", "climate",
+			"logic", "analogy", "metaphor", "reasoning",
+			"România", "București", "Carpați", "Dunărea",
+			"istoria României", "Mihai Eminescu",
+		},
+		AutoSeedDatasets: []string{
+			"tatsu-lab/alpaca",
+			"gsm8k",
+			"hellaswag",
+		},
+		AutoSearchLangs:     []string{"en", "ro"},
+		AutoHFRowsPerDS:     20,
+		AutoLearnInterval:   30,
+		AutoMaxGapsPerCycle: 3,
+
+		// Web server defaults
+		WebPort:     "8080",
+		WebBindAddr: "127.0.0.1",
 	}
 }
 
