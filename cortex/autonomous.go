@@ -85,7 +85,7 @@ func NewAutonomousLearner(org *Organism) *AutonomousLearner {
 
 	return &AutonomousLearner{
 		Organism:         org,
-		Web:              NewWebLearner(),
+		Web:              NewWebLearnerFromConfig(cfg),
 		Evaluator:        NewSelfEvaluator(),
 		MaxGaps:          1000,
 		LearnInterval:    interval,

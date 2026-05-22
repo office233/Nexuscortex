@@ -25,19 +25,65 @@ type WebLearner struct {
 	RateLimit time.Duration // minimum pause between requests
 	lastReq   time.Time
 
+	// Configurable endpoints and limits (from Config)
+	BodyLimit    int64  // max HTTP response body in bytes
+	UserAgent    string // User-Agent header
+	WikiBaseURL  string // e.g. "wikipedia.org"
+	HFSearchURL  string // HuggingFace dataset search URL
+	HFRowsURL    string // HuggingFace rows API URL
+
 	// Stats
 	TotalSearches int
 	TotalLearned  int
 	TotalFacts    int
 }
 
-// NewWebLearner creates a web learner with sensible defaults.
+// NewWebLearner creates a web learner from Config values.
 func NewWebLearner() *WebLearner {
+	return NewWebLearnerFromConfig(DefaultConfig())
+}
+
+// NewWebLearnerFromConfig creates a web learner with all values from Config.
+func NewWebLearnerFromConfig(cfg Config) *WebLearner {
+	timeout := time.Duration(cfg.WebLearnerTimeoutSecs) * time.Second
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	rateLimit := time.Duration(cfg.WebLearnerRateLimitMs) * time.Millisecond
+	if rateLimit <= 0 {
+		rateLimit = 2 * time.Second
+	}
+	bodyLimitMB := cfg.WebLearnerBodyLimitMB
+	if bodyLimitMB <= 0 {
+		bodyLimitMB = 5
+	}
+	userAgent := cfg.WebLearnerUserAgent
+	if userAgent == "" {
+		userAgent = "NexusCortex/1.0 (autonomous learner)"
+	}
+	wikiBase := cfg.WebLearnerWikiBaseURL
+	if wikiBase == "" {
+		wikiBase = "wikipedia.org"
+	}
+	hfSearch := cfg.WebLearnerHFSearchURL
+	if hfSearch == "" {
+		hfSearch = "https://huggingface.co/api/datasets"
+	}
+	hfRows := cfg.WebLearnerHFRowsURL
+	if hfRows == "" {
+		hfRows = "https://datasets-server.huggingface.co/rows"
+	}
+
 	return &WebLearner{
 		Client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: timeout,
 		},
-		RateLimit: 2 * time.Second, // Be polite: max 1 req / 2 sec
+		RateLimit:   rateLimit,
+		BodyLimit:   int64(bodyLimitMB) << 20,
+		UserAgent:   userAgent,
+		WikiBaseURL: wikiBase,
+		HFSearchURL: hfSearch,
+		HFRowsURL:   hfRows,
 	}
 }
 
@@ -73,14 +119,15 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 	}
 
 	// Wikipedia search API
-	apiURL := fmt.Sprintf("https://%s.wikipedia.org/w/api.php?action=query&list=search&srsearch=%s&srlimit=%d&format=json&utf8=1",
-		lang, url.QueryEscape(query), maxResults)
+	apiURL := fmt.Sprintf("https://%s.%s/w/api.php?action=query&list=search&srsearch=%s&srlimit=%d&format=json&utf8=1",
+		lang, wl.WikiBaseURL, url.QueryEscape(query), maxResults)
+
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("wikipedia request build failed: %w", err)
 	}
-	req.Header.Set("User-Agent", "NexusCortex/1.0 (autonomous learner; contact: nexus@cortex.local)")
+	req.Header.Set("User-Agent", wl.UserAgent)
 
 	resp, err := wl.Client.Do(req)
 	if err != nil {
@@ -88,7 +135,7 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, wl.BodyLimit))
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +160,7 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 			Title:   s.Title,
 			Snippet: clean,
 			Source:  "wikipedia-" + lang,
-			URL:     fmt.Sprintf("https://%s.wikipedia.org/wiki/%s", lang, url.PathEscape(s.Title)),
+			URL:     fmt.Sprintf("https://%s.%s/wiki/%s", lang, wl.WikiBaseURL, url.PathEscape(s.Title)),
 		})
 	}
 	return results, nil
@@ -127,14 +174,14 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 		lang = "en"
 	}
 
-	apiURL := fmt.Sprintf("https://%s.wikipedia.org/api/rest_v1/page/summary/%s",
-		lang, url.PathEscape(title))
+	apiURL := fmt.Sprintf("https://%s.%s/api/rest_v1/page/summary/%s",
+		lang, wl.WikiBaseURL, url.PathEscape(title))
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("wikipedia summary request failed: %w", err)
 	}
-	req.Header.Set("User-Agent", "NexusCortex/1.0 (autonomous learner; contact: nexus@cortex.local)")
+	req.Header.Set("User-Agent", wl.UserAgent)
 
 	resp, err := wl.Client.Do(req)
 	if err != nil {
@@ -142,7 +189,7 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, wl.BodyLimit))
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +206,7 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 		Title:   summary.Title,
 		Content: summary.Extract,
 		Source:  "wikipedia-" + lang,
-		URL:     fmt.Sprintf("https://%s.wikipedia.org/wiki/%s", lang, url.PathEscape(title)),
+		URL:     fmt.Sprintf("https://%s.%s/wiki/%s", lang, wl.WikiBaseURL, url.PathEscape(title)),
 	}, nil
 }
 
@@ -201,12 +248,7 @@ func (wl *WebLearner) LearnFromResults(org *Organism, results []SearchResult) in
 // HuggingFace Datasets API integration
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-const (
-	hfDatasetSearchURL = "https://huggingface.co/api/datasets"
-	hfDatasetInfoURL   = "https://huggingface.co/api/datasets/"
-	hfRowsURL          = "https://datasets-server.huggingface.co/rows"
-	hfUserAgent        = "NexusCortex/1.0"
-)
+
 
 // SearchHuggingFace searches the HuggingFace Datasets API for datasets
 // matching the query. Returns up to maxResults results with dataset
@@ -220,13 +262,13 @@ func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchR
 	}
 
 	apiURL := fmt.Sprintf("%s?search=%s&limit=%d",
-		hfDatasetSearchURL, url.QueryEscape(query), maxResults)
+		wl.HFSearchURL, url.QueryEscape(query), maxResults)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("huggingface request build failed: %w", err)
 	}
-	req.Header.Set("User-Agent", hfUserAgent)
+	req.Header.Set("User-Agent", wl.UserAgent)
 
 	resp, err := wl.Client.Do(req)
 	if err != nil {
@@ -238,7 +280,7 @@ func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchR
 		return nil, fmt.Errorf("huggingface search returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, wl.BodyLimit))
 	if err != nil {
 		return nil, err
 	}
@@ -283,13 +325,13 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 	}
 
 	apiURL := fmt.Sprintf("%s?dataset=%s&config=default&split=train&offset=0&length=%d",
-		hfRowsURL, url.QueryEscape(datasetID), maxRows)
+		wl.HFRowsURL, url.QueryEscape(datasetID), maxRows)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("huggingface rows request build failed: %w", err)
 	}
-	req.Header.Set("User-Agent", hfUserAgent)
+	req.Header.Set("User-Agent", wl.UserAgent)
 
 	resp, err := wl.Client.Do(req)
 	if err != nil {
@@ -301,7 +343,7 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 		return 0, fmt.Errorf("huggingface rows returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, wl.BodyLimit))
 	if err != nil {
 		return 0, err
 	}

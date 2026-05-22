@@ -219,6 +219,15 @@ type Config struct {
 	// Web server configuration
 	WebPort     string `json:"web_port,omitempty"`      // Dashboard port (default "8080")
 	WebBindAddr string `json:"web_bind_addr,omitempty"` // Bind address (default "127.0.0.1")
+
+	// WebLearner HTTP configuration — previously hardcoded
+	WebLearnerTimeoutSecs  int    `json:"web_learner_timeout_secs"`  // HTTP request timeout
+	WebLearnerRateLimitMs  int    `json:"web_learner_rate_limit_ms"` // Min pause between requests (ms)
+	WebLearnerBodyLimitMB  int    `json:"web_learner_body_limit_mb"` // Max HTTP response body (MB)
+	WebLearnerUserAgent    string `json:"web_learner_user_agent,omitempty"`
+	WebLearnerWikiBaseURL  string `json:"web_learner_wiki_base_url,omitempty"`  // e.g. "wikipedia.org"
+	WebLearnerHFSearchURL  string `json:"web_learner_hf_search_url,omitempty"`
+	WebLearnerHFRowsURL    string `json:"web_learner_hf_rows_url,omitempty"`
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -451,6 +460,15 @@ func DefaultConfig() Config {
 		// Web server defaults
 		WebPort:     "8080",
 		WebBindAddr: "127.0.0.1",
+
+		// WebLearner defaults (previously hardcoded in web_learner.go)
+		WebLearnerTimeoutSecs: 10,
+		WebLearnerRateLimitMs: 2000,
+		WebLearnerBodyLimitMB: 5,
+		WebLearnerUserAgent:   "NexusCortex/1.0 (autonomous learner)",
+		WebLearnerWikiBaseURL: "wikipedia.org",
+		WebLearnerHFSearchURL: "https://huggingface.co/api/datasets",
+		WebLearnerHFRowsURL:   "https://datasets-server.huggingface.co/rows",
 	}
 }
 

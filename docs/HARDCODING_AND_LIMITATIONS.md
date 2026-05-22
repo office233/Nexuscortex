@@ -56,12 +56,12 @@ presented as evidence of emergent reasoning ability.
 | Active bits | `50` | `Config.ActiveCount` |
 | Max memories | `10000` | `Config.MaxMemories` |
 | Learn interval | `30s` | `Config.AutoLearnInterval` |
-| HTTP timeout | `10s` | hardcoded in `NewWebLearner()` |
-| Rate limit | `2s` | hardcoded in `NewWebLearner()` |
-| HTTP body limit | `5 MB` | `io.LimitReader` in all HTTP reads |
+| HTTP timeout | `10s` | `Config.WebLearnerTimeoutSecs` |
+| Rate limit | `2s` | `Config.WebLearnerRateLimitMs` |
+| HTTP body limit | `5 MB` | `Config.WebLearnerBodyLimitMB` |
+| User-Agent | `NexusCortex/1.0 (autonomous learner)` | `Config.WebLearnerUserAgent` |
 
-All `Config` fields can be overridden. WebLearner timeout/rate-limit are
-currently hardcoded but are reasonable for polite web scraping.
+All `Config` fields can be overridden via JSON config file.
 
 ## 5. File Permissions
 
@@ -71,15 +71,13 @@ This is applied uniformly across all persistence code.
 
 ## 6. External API Endpoints
 
-| Endpoint | Purpose |
-|----------|---------|
-| `en.wikipedia.org/api/rest_v1/` | Wikipedia summaries |
-| `en.wikipedia.org/w/api.php` | Wikipedia search |
-| `huggingface.co/api/datasets` | HuggingFace dataset search |
-| `datasets-server.huggingface.co/rows` | HuggingFace row download |
+| Endpoint | Purpose | Config Field |
+|----------|---------|------|
+| `*.wikipedia.org` | Wikipedia API | `Config.WebLearnerWikiBaseURL` |
+| `huggingface.co/api/datasets` | HuggingFace search | `Config.WebLearnerHFSearchURL` |
+| `datasets-server.huggingface.co/rows` | HuggingFace rows | `Config.WebLearnerHFRowsURL` |
 
-All HTTP responses are limited to 5 MB via `io.LimitReader`.
-No API keys are required or stored.
+All endpoints are configurable via Config. No API keys required.
 
 ## 7. Python Script (`scripts/download_hf_corpus.py`)
 
@@ -93,7 +91,8 @@ No API keys are required or stored.
    and recombines learned fragments.
 2. **Small eval set**: 30 test cases is insufficient for capability claims.
 3. **Symbolic reasoning only**: Math/logic is rule-based, not learned.
-4. **No adversarial testing**: No fuzz tests for corrupt model files yet.
+4. **No adversarial testing**: Fuzz tests exist for `.nxt1`, `semantic.json`,
+   and `metadata.json` loaders. Run with `go test -fuzz=Fuzz* ./cortex/`.
 5. **WebGPU untested in CI**: Build tag `webgpu` is not tested in CI due to
    GPU driver requirements.
 6. **Single-machine only**: No distributed training or inference.
