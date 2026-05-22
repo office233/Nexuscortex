@@ -20,6 +20,13 @@ type FractalCortex struct {
 	Config     Config
 	DataDir    string
 	GrowthLock bool // Prevents spawning too fast
+
+	// Router enables top-k expert routing instead of all-block voting.
+	// When nil, all blocks are evaluated (backward compatible).
+	Router  *ExpertRouter
+
+	// Journal accumulates weight changes for batch merge during Sleep().
+	Journal *PlasticityJournal
 }
 
 func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
@@ -119,10 +126,9 @@ func perturbTernaryLayer(layer *TernaryLayer, rate uint8) {
 	}
 }
 
-// ProcessToken routes the input SDR through ALL CortexBlocks and combines
-// their outputs via bitwise majority voting. Each block acts as an
-// independent expert with slightly different weights, and the consensus
-// SDR contains bits that >50% of blocks agree on.
+// ProcessToken routes the input SDR through CortexBlocks.
+// If a Router is set and there are enough blocks, uses top-k routing.
+// Otherwise falls back to all-block voting for backward compatibility.
 func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 	if len(fc.Blocks) == 0 {
 		return NewSDR(fc.Config.SDRSize)
@@ -131,7 +137,12 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 		return fc.Blocks[0].ProcessToken(input)
 	}
 
-	// Collect outputs from ALL blocks via weighted voting
+	// Use top-k routing if Router is available
+	if fc.Router != nil && len(fc.Blocks) > fc.Router.TopK {
+		return fc.ProcessTokenTopK(input)
+	}
+
+	// Fallback: collect outputs from ALL blocks via weighted voting
 	dim := fc.Config.SDRSize
 	voteCounts := make([]int, dim)
 	var bestBlock SDR
@@ -159,6 +170,69 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 	}
 
 	// Fallback: if voting produced too sparse output, use the best single block
+	minActive := input.ActiveCount / 4
+	if minActive < 2 {
+		minActive = 2
+	}
+	if result.ActiveCount < minActive && bestActive > 0 {
+		return bestBlock
+	}
+
+	return result
+}
+
+// ProcessTokenTopK routes input through only the top-k most relevant
+// expert blocks instead of all blocks. This is the key to scaling:
+// with 64 experts, running only top-2 does 32x less work.
+func (fc *FractalCortex) ProcessTokenTopK(input SDR) SDR {
+	if fc.Router == nil {
+		return fc.ProcessToken(input)
+	}
+
+	selected := fc.Router.Route(input)
+	if len(selected) == 0 {
+		return NewSDR(fc.Config.SDRSize)
+	}
+
+	// Single expert: no voting needed
+	if len(selected) == 1 {
+		result := fc.Blocks[selected[0]].ProcessToken(input)
+		fc.Router.UpdateEmbedding(selected[0], input)
+		return result
+	}
+
+	// Multiple experts: vote among selected only
+	dim := fc.Config.SDRSize
+	voteCounts := make([]int, dim)
+	var bestBlock SDR
+	var bestActive int
+
+	for _, idx := range selected {
+		if idx >= len(fc.Blocks) {
+			continue
+		}
+		output := fc.Blocks[idx].ProcessToken(input)
+		if output.ActiveCount > bestActive {
+			bestActive = output.ActiveCount
+			bestBlock = output
+		}
+		for _, bitIdx := range output.ActiveIndices() {
+			if bitIdx < dim {
+				voteCounts[bitIdx]++
+			}
+		}
+		fc.Router.UpdateEmbedding(idx, input)
+	}
+
+	// Majority among selected
+	threshold := len(selected) / 2
+	result := NewSDR(dim)
+	for idx, count := range voteCounts {
+		if count > threshold {
+			result.Set(idx)
+		}
+	}
+
 	minActive := input.ActiveCount / 4
 	if minActive < 2 {
 		minActive = 2
