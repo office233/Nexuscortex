@@ -131,11 +131,17 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 		return fc.Blocks[0].ProcessToken(input)
 	}
 
-	// Collect outputs from ALL blocks
+	// Collect outputs from ALL blocks via weighted voting
 	dim := fc.Config.SDRSize
 	voteCounts := make([]int, dim)
+	var bestBlock SDR
+	var bestActive int
 	for _, block := range fc.Blocks {
 		output := block.ProcessToken(input)
+		if output.ActiveCount > bestActive {
+			bestActive = output.ActiveCount
+			bestBlock = output
+		}
 		for _, idx := range output.ActiveIndices() {
 			if idx < dim {
 				voteCounts[idx]++
@@ -152,6 +158,15 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 		}
 	}
 
+	// Fallback: if voting produced too sparse output, use the best single block
+	minActive := input.ActiveCount / 4
+	if minActive < 2 {
+		minActive = 2
+	}
+	if result.ActiveCount < minActive && bestActive > 0 {
+		return bestBlock
+	}
+
 	return result
 }
 
@@ -164,14 +179,14 @@ func (fc *FractalCortex) CheckPredictionError(errorMagnitude float64) {
 	// Threshold for spawning a new cortex block
 	if errorMagnitude > 0.8 && !fc.GrowthLock {
 		fc.SpawnNeurogenesis()
-		fc.GrowthLock = true // Reset lock after sleep consolidation
+		fc.GrowthLock = true // Reset via ResetGrowthLock() during Sleep()
 	}
 }
 
 // Save persists all blocks in the FractalCortex to the given directory.
 func (fc *FractalCortex) Save(dataDir string) error {
 	fcDir := filepath.Join(dataDir, "fractal_cortex")
-	if err := os.MkdirAll(fcDir, 0755); err != nil {
+	if err := os.MkdirAll(fcDir, 0700); err != nil {
 		return fmt.Errorf("fractal_cortex save mkdir: %w", err)
 	}
 
@@ -204,34 +219,34 @@ func (fc *FractalCortex) Save(dataDir string) error {
 		return fmt.Errorf("fractal_cortex marshal meta: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(fcDir, "metadata.json"), metaData, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(fcDir, "metadata.json"), metaData, 0600); err != nil {
 		return fmt.Errorf("fractal_cortex write meta: %w", err)
 	}
 
 	// Save each block
 	for id, block := range fc.Blocks {
 		blockDir := filepath.Join(fcDir, fmt.Sprintf("block_%d", id))
-		if err := os.MkdirAll(blockDir, 0755); err != nil {
+		if err := os.MkdirAll(blockDir, 0700); err != nil {
 			return fmt.Errorf("fractal_cortex block mkdir: %w", err)
 		}
 
 		// Save 5 ternary layers
-		if err := os.WriteFile(filepath.Join(blockDir, "feature.nxt1"), block.SharedFeatureLayer.MarshalRGBA32(), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(blockDir, "feature.nxt1"), block.SharedFeatureLayer.MarshalRGBA32(), 0600); err != nil {
 			return fmt.Errorf("save feature layer: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(blockDir, "output.nxt1"), block.SharedOutputLayer.MarshalRGBA32(), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(blockDir, "output.nxt1"), block.SharedOutputLayer.MarshalRGBA32(), 0600); err != nil {
 			return fmt.Errorf("save output layer: %w", err)
 		}
 		
 		if len(block.Scans) > 0 {
 			scan := block.Scans[0]
-			if err := os.WriteFile(filepath.Join(blockDir, "gate.nxt1"), scan.InputGate.MarshalRGBA32(), 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(blockDir, "gate.nxt1"), scan.InputGate.MarshalRGBA32(), 0600); err != nil {
 				return fmt.Errorf("save gate layer: %w", err)
 			}
-			if err := os.WriteFile(filepath.Join(blockDir, "inproj.nxt1"), scan.InputProjection.MarshalRGBA32(), 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(blockDir, "inproj.nxt1"), scan.InputProjection.MarshalRGBA32(), 0600); err != nil {
 				return fmt.Errorf("save inproj layer: %w", err)
 			}
-			if err := os.WriteFile(filepath.Join(blockDir, "outproj.nxt1"), scan.OutputProjection.MarshalRGBA32(), 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(blockDir, "outproj.nxt1"), scan.OutputProjection.MarshalRGBA32(), 0600); err != nil {
 				return fmt.Errorf("save outproj layer: %w", err)
 			}
 		}
@@ -260,8 +275,8 @@ func (fc *FractalCortex) Load(dataDir string) error {
 		return fmt.Errorf("fractal_cortex unmarshal meta: %w", err)
 	}
 
-	if meta.BlocksCount < 0 || meta.BlocksCount > 16 {
-		return fmt.Errorf("invalid blocks_count: %d", meta.BlocksCount)
+	if meta.BlocksCount < 0 || meta.BlocksCount > MaxFractalBlocks {
+		return fmt.Errorf("invalid blocks_count: %d (max %d)", meta.BlocksCount, MaxFractalBlocks)
 	}
 	if meta.NumLayers <= 0 || meta.NumLayers > 64 {
 		return fmt.Errorf("invalid num_layers: %d", meta.NumLayers)
@@ -362,4 +377,10 @@ func (fc *FractalCortex) Load(dataDir string) error {
 
 	fc.Blocks = loadedBlocks
 	return nil
+}
+
+// ResetGrowthLock allows new block spawning after sleep consolidation.
+// This must be called from Organism.Sleep() to re-enable neurogenesis.
+func (fc *FractalCortex) ResetGrowthLock() {
+	fc.GrowthLock = false
 }

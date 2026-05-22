@@ -27,11 +27,11 @@ func (e *WebGPUEngine) Init() error {
 func (e *WebGPUEngine) Close() {}
 
 // ForwardSparse delegates sparse neural layer computations directly to the CPUEngine.
-func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) []int16 {
+func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) ([]int16, error) {
 	return e.cpu.ForwardSparse(activeIndices, activeValues, tiles, bias, tilesPerRow, outputSize)
 }
 
 // BatchSDRSimilarity delegates SDR overlap comparisons to the CPUEngine.
-func (e *WebGPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32) []uint8 {
+func (e *WebGPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32) ([]uint8, error) {
 	return e.cpu.BatchSDRSimilarity(querySDR, memorySDRs)
 }

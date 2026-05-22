@@ -15,7 +15,7 @@ func (e *CPUEngine) Init() error {
 
 func (e *CPUEngine) Close() {}
 
-func (e *CPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) []int16 {
+func (e *CPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) ([]int16, error) {
 	output := make([]int16, outputSize)
 	copy(output, bias)
 
@@ -57,18 +57,18 @@ func (e *CPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, 
 		output[j] += int16(acc)
 	}
 
-	return output
+	return output, nil
 }
 
-func (e *CPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32) []uint8 {
+func (e *CPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32) ([]uint8, error) {
 	results := make([]uint8, len(memorySDRs))
-	
+
 	// Create a fast lookup map for query
 	queryMap := make(map[uint32]struct{}, len(querySDR))
 	for _, idx := range querySDR {
 		queryMap[idx] = struct{}{}
 	}
-	
+
 	for i, mem := range memorySDRs {
 		var overlap uint8
 		for _, idx := range mem {
@@ -80,6 +80,6 @@ func (e *CPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32)
 		}
 		results[i] = overlap
 	}
-	
-	return results
+
+	return results, nil
 }

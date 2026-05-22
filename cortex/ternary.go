@@ -286,26 +286,24 @@ func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) 
 	}
 
 	if l.Engine != nil {
-		// Delegate to hardware engine
+		// Delegate to hardware engine (returns error instead of panicking)
 		if eng, ok := l.Engine.(interface {
-			ForwardSparse([]uint32, []int16, []uint32, []int16, int, int) []int16
+			ForwardSparse([]uint32, []int16, []uint32, []int16, int, int) ([]int16, error)
 		}); ok {
 			// Convert activeIndices to uint32
 			indices32 := make([]uint32, len(activeIndices))
 			for i, v := range activeIndices {
 				indices32[i] = uint32(v)
 			}
-			// Cast Tiles to []uint32
-			// This avoids an allocation if we use unsafe, but for safety we copy for now,
-			// or we can just redefine Tiles as []uint32 in TernaryLayer?
-			// Since TernaryTile is uint32, we can cast the slice.
-			// However, in Go casting a slice requires unsafe. We'll just do a copy for now,
-			// or we can use unsafe in a tiny helper. Let's do a safe copy here for simplicity,
-			// though in production we should pass unsafe pointer or redefine.
 
 			// Fast zero-copy cast using unsafe
 			tiles32 := unsafe.Slice((*uint32)(unsafe.Pointer(&l.Tiles[0])), len(l.Tiles))
-			return eng.ForwardSparse(indices32, activeValues, tiles32, l.Bias, l.TilesPerRow, l.OutputSize)
+			result, err := eng.ForwardSparse(indices32, activeValues, tiles32, l.Bias, l.TilesPerRow, l.OutputSize)
+			if err == nil {
+				return result
+			}
+			// Engine failed — fall through to CPU path below.
+			// This ensures GPU errors never crash the process.
 		}
 	}
 

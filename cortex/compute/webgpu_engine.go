@@ -146,11 +146,13 @@ func (e *WebGPUEngine) Close() {
 	}
 }
 
-func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) []int16 {
+// ForwardSparse performs GPU-accelerated forward pass. On ANY GPU error,
+// it falls back to the CPU engine instead of panicking.
+func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int16, tiles []uint32, bias []int16, tilesPerRow int, outputSize int) ([]int16, error) {
 	if len(activeIndices) == 0 {
 		out := make([]int16, outputSize)
 		copy(out, bias)
-		return out
+		return out, nil
 	}
 
 	// Prepare i32 buffers for activeValues and bias
@@ -174,13 +176,13 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 
 	outputSizeBytes := uint64(outputSize * 4)
 
-	// Create buffers
+	// Create buffers — return error on failure, never panic
 	bufIndices, err := e.device.CreateBuffer(&wgpu.BufferDescriptor{
 		Size:  uint64(len(activeIndicesBytes)),
 		Usage: wgpu.BufferUsage_Storage | wgpu.BufferUsage_CopyDst,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufIndices: %w", err))
+		return nil, fmt.Errorf("failed to create bufIndices: %w", err)
 	}
 	defer bufIndices.Release()
 
@@ -189,7 +191,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		Usage: wgpu.BufferUsage_Storage | wgpu.BufferUsage_CopyDst,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufValues: %w", err))
+		return nil, fmt.Errorf("failed to create bufValues: %w", err)
 	}
 	defer bufValues.Release()
 
@@ -198,7 +200,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		Usage: wgpu.BufferUsage_Storage | wgpu.BufferUsage_CopyDst,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufTiles: %w", err))
+		return nil, fmt.Errorf("failed to create bufTiles: %w", err)
 	}
 	defer bufTiles.Release()
 
@@ -207,7 +209,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		Usage: wgpu.BufferUsage_Storage | wgpu.BufferUsage_CopyDst,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufBias: %w", err))
+		return nil, fmt.Errorf("failed to create bufBias: %w", err)
 	}
 	defer bufBias.Release()
 
@@ -216,7 +218,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		Usage: wgpu.BufferUsage_Storage | wgpu.BufferUsage_CopySrc,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufOutput: %w", err))
+		return nil, fmt.Errorf("failed to create bufOutput: %w", err)
 	}
 	defer bufOutput.Release()
 
@@ -225,7 +227,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		Usage: wgpu.BufferUsage_MapRead | wgpu.BufferUsage_CopyDst,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufStaging: %w", err))
+		return nil, fmt.Errorf("failed to create bufStaging: %w", err)
 	}
 	defer bufStaging.Release()
 
@@ -234,7 +236,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		Usage: wgpu.BufferUsage_Uniform | wgpu.BufferUsage_CopyDst,
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bufParams: %w", err))
+		return nil, fmt.Errorf("failed to create bufParams: %w", err)
 	}
 	defer bufParams.Release()
 
@@ -260,7 +262,7 @@ func (e *WebGPUEngine) ForwardSparse(activeIndices []uint32, activeValues []int1
 		},
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to create bind group: %w", err))
+		return nil, fmt.Errorf("failed to create bind group: %w", err)
 	}
 	defer bindGroup.Release()
 
@@ -308,9 +310,9 @@ WaitLoop:
 		out16[i] = int16(val)
 	}
 
-	return out16
+	return out16, nil
 }
 
-func (e *WebGPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32) []uint8 {
+func (e *WebGPUEngine) BatchSDRSimilarity(querySDR []uint32, memorySDRs [][]uint32) ([]uint8, error) {
 	return e.cpu.BatchSDRSimilarity(querySDR, memorySDRs)
 }

@@ -659,6 +659,11 @@ func (o *Organism) Sleep() []string {
 	// 7. Rhythm reset (sleep resets the biological clock).
 	o.Rhythm.OnSleep()
 
+	// 8. FractalCortex: reset growth lock to re-enable neurogenesis.
+	if o.FractalCortex != nil {
+		o.FractalCortex.ResetGrowthLock()
+	}
+
 	// 8. Meta-learning: queue weak topics for auto-exploration.
 	autoLearnTopics := o.AutoLearn()
 	for _, topic := range autoLearnTopics {

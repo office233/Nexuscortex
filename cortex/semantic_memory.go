@@ -229,6 +229,19 @@ func LoadSemanticMemory(path string, sdrSize int) (*SemanticMemory, error) {
 		return nil, fmt.Errorf("semantic memory unmarshal: %w", err)
 	}
 
+	// Validate limits to prevent OOM from corrupted JSON
+	const maxSemanticSDRSize = 100_000
+	const maxSemanticConcepts = 100_000
+	const maxConceptActiveIndices = 10_000
+	const maxContextLen = 10_000
+
+	if aux.SDRSize < 0 || aux.SDRSize > maxSemanticSDRSize {
+		return nil, fmt.Errorf("semantic memory invalid SDRSize: %d", aux.SDRSize)
+	}
+	if len(aux.Concepts) > maxSemanticConcepts {
+		return nil, fmt.Errorf("semantic memory too many concepts: %d (max %d)", len(aux.Concepts), maxSemanticConcepts)
+	}
+
 	sm := &SemanticMemory{
 		Concepts: make([]Concept, len(aux.Concepts)),
 		SDRSize:  aux.SDRSize,
@@ -239,6 +252,12 @@ func LoadSemanticMemory(path string, sdrSize int) (*SemanticMemory, error) {
 	}
 
 	for i, cJSON := range aux.Concepts {
+		if len(cJSON.ActiveIndices) > maxConceptActiveIndices {
+			return nil, fmt.Errorf("semantic memory concept %d has too many active indices: %d", i, len(cJSON.ActiveIndices))
+		}
+		if len(cJSON.Contexts) > maxContextLen {
+			return nil, fmt.Errorf("semantic memory concept %d has too many contexts: %d", i, len(cJSON.Contexts))
+		}
 		sdr := NewSDR(sm.SDRSize)
 		for _, idx := range cJSON.ActiveIndices {
 			sdr.Set(idx)
