@@ -244,29 +244,44 @@ func TestParsedRefererVerification(t *testing.T) {
 	}
 }
 
-func TestSSRFRedirectPrevention(t *testing.T) {
-	// Start a local test server to act as a redirector
-	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Attempt to redirect to a forbidden localhost address
-		http.Redirect(w, r, "http://127.0.0.1/sensitive-data", http.StatusMovedPermanently)
-	}))
-	defer redirector.Close()
-
-	// Initialize WebLearner
+// TestSecurityHeaders ensures all HTTP responses include required security headers
+func TestSecurityHeaders(t *testing.T) {
 	cfg := cortex.DefaultConfig()
-	wl := cortex.NewWebLearnerFromConfig(cfg)
+	cfg.DataDir = t.TempDir()
+	cfg.Fresh = true
+	cfg.NoSave = true
+	rng := rand.New(rand.NewSource(cfg.Seed))
+	org := cortex.NewOrganism(cfg, rng)
 
-	req, err := http.NewRequest("GET", redirector.URL, nil)
-	if err != nil {
-		t.Fatal(err)
+	server := &Server{
+		org:   org,
+		token: "test-token",
+		port:  8080,
 	}
 
-	_, err = wl.Client.Do(req)
-	if err == nil {
-		t.Fatal("expected request to fail due to forbidden redirect")
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.Header.Set("X-Nexus-Token", "test-token")
+	req.Header.Set("Origin", "http://localhost:8080")
+	w := httptest.NewRecorder()
+
+	server.GetStatsHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	if !strings.Contains(err.Error(), "SSRF prevention") && !strings.Contains(err.Error(), "blocked redirect") {
-		t.Errorf("expected SSRF redirect error, got: %v", err)
+	expectedHeaders := map[string]string{
+		"Content-Security-Policy": "default-src 'self'",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "strict-origin-when-cross-origin",
+	}
+
+	for header, expectedSubstr := range expectedHeaders {
+		val := w.Header().Get(header)
+		if val == "" {
+			t.Errorf("missing required security header: %s", header)
+		} else if !strings.Contains(val, expectedSubstr) {
+			t.Errorf("header %s = %q, expected to contain %q", header, val, expectedSubstr)
+		}
 	}
 }

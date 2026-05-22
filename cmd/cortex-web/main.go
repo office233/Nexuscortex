@@ -126,7 +126,7 @@ func main() {
 	// ── Mount Route Mapping ──────────────────────────────────────────
 	// Static asset mounting from the embedded filesystem
 	staticFS := http.FileServer(http.FS(web.Assets))
-	http.Handle("/", staticFS)
+	http.Handle("/", securityHeaders(staticFS))
 
 	// REST API Endpoints
 	// (Removed GET /api/token to prevent session security leakage)
@@ -211,11 +211,39 @@ func main() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Security Headers Middleware
+// ─────────────────────────────────────────────────────────────────────
+
+// securityHeaders wraps an http.Handler to inject protective HTTP headers
+// on every response: Content-Security-Policy, X-Content-Type-Options,
+// X-Frame-Options, and Referrer-Policy.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// setSecurityHeaders adds protective HTTP headers to the response writer.
+// Called by both the static file middleware and API handlers.
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // HTTP API Handlers & Security Validations
 // ─────────────────────────────────────────────────────────────────────
 
 // validateRequest verifies the security token and Same-Origin headers for mutating calls
 func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
+	// Inject security headers on every API response (including error paths)
+	setSecurityHeaders(w)
+
 	// 1. Validate the X-Nexus-Token custom header if security token is enabled
 	if s.token != "" {
 		token := r.Header.Get("X-Nexus-Token")

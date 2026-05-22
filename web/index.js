@@ -179,7 +179,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateDashboard(stats);
             } else if (res.status === 401) {
                 if (pollingInterval) clearInterval(pollingInterval);
-                localStorage.removeItem('nexusToken');
+                sessionStorage.removeItem('nexusToken');
                 showTokenModal("Session expired or token is invalid. Please re-authenticate.");
             }
         } catch (err) {
@@ -306,9 +306,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     orgDiv.innerHTML = `
                         <p>${escapeHTML(data.response)}</p>
                         <div class="msg-telemetry">
-                            <span>🎯 Conf: ${data.confidence}</span>
-                            <span>⚡ Surprise: ${data.surprise}</span>
-                            <span>🧬 Source: ${data.source}</span>
+                            <span>🎯 Conf: ${escapeHTML(String(data.confidence))}</span>
+                            <span>⚡ Surprise: ${escapeHTML(String(data.surprise))}</span>
+                            <span>🧬 Source: ${escapeHTML(String(data.source))}</span>
                         </div>
                         <div class="feedback-controls">
                             <button class="feedback-btn up-btn" title="Reinforce this response (LTP)">👍</button>
@@ -453,12 +453,12 @@ document.addEventListener('DOMContentLoaded', () => {
         sleepStatsDelta.innerHTML = `
             <div class="delta-card">
                 <span class="label">Episodic Pruning</span>
-                <span class="value">${memoriesPre} ➔ ${memoriesPost}</span>
+                <span class="value">${escapeHTML(String(memoriesPre))} ➔ ${escapeHTML(String(memoriesPost))}</span>
                 ${memoryDiffHTML}
             </div>
             <div class="delta-card">
                 <span class="label">Prefrontal Synapses</span>
-                <span class="value">${synapsesPre} ➔ ${synapsesPost}</span>
+                <span class="value">${escapeHTML(String(synapsesPre))} ➔ ${escapeHTML(String(synapsesPost))}</span>
                 ${synapsesDiffHTML}
             </div>
         `;
@@ -729,14 +729,14 @@ document.addEventListener('DOMContentLoaded', () => {
         sleepStatsDelta.innerHTML = `
             <div class="delta-card">
                 <span class="label">Total Synaptic Weight</span>
-                <span class="value font-mono">${formatNumber(synapsesPre)} ➔ ${formatNumber(synapsesPost)}</span>
+                <span class="value font-mono">${escapeHTML(formatNumber(synapsesPre))} ➔ ${escapeHTML(formatNumber(synapsesPost))}</span>
                 ${synapseDiffHTML}
             </div>
             <div class="delta-card">
                 <span class="label">Deliberation Outcome</span>
                 <span class="value" style="font-size: 0.95rem; font-family: inherit; font-weight: 600; margin-top: 8px; text-align: left; width: 100%;">
-                    Consolidated: <span style="color: var(--neon-green); font-weight: 700;">${delta.consolidated} tracks</span><br/>
-                    Pruned: <span style="color: var(--neon-red); font-weight: 700;">${delta.pruned} paths</span>
+                    Consolidated: <span style="color: var(--neon-green); font-weight: 700;">${escapeHTML(String(delta.consolidated))} tracks</span><br/>
+                    Pruned: <span style="color: var(--neon-red); font-weight: 700;">${escapeHTML(String(delta.pruned))} paths</span>
                 </span>
             </div>
         `;
@@ -779,7 +779,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function handleApiError(res, defaultErrorMsg) {
         if (res.status === 401) {
             if (pollingInterval) clearInterval(pollingInterval);
-            localStorage.removeItem('nexusToken');
+            sessionStorage.removeItem('nexusToken');
             showTokenModal("Session expired or token is invalid. Please re-authenticate.");
             throw new Error("Unauthorized");
         }
@@ -794,7 +794,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         nexusToken = enteredToken;
-        localStorage.setItem('nexusToken', enteredToken);
+        sessionStorage.setItem('nexusToken', enteredToken);
         
         const success = await verifyToken();
         if (success) {
@@ -813,17 +813,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial setup
     async function initialize() {
-        const urlParams = new URLSearchParams(window.location.search);
-        const tokenParam = urlParams.get('token');
+        // Read token from URL fragment (#token=...) — fragments are never sent to server or logged
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        const tokenParam = hashParams.get('token');
         if (tokenParam) {
             nexusToken = tokenParam;
-            localStorage.setItem('nexusToken', tokenParam);
-            // Clean up URL parameter to avoid leaking in history or screen share
-            urlParams.delete('token');
-            const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
-            window.history.replaceState({}, document.title, newUrl);
+            sessionStorage.setItem('nexusToken', tokenParam);
+            // Clean up URL fragment to avoid leaking in history or screen share
+            window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
         } else {
-            nexusToken = localStorage.getItem('nexusToken') || '';
+            nexusToken = sessionStorage.getItem('nexusToken') || '';
         }
 
         if (nexusToken) {
@@ -831,7 +830,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (success) {
                 startPolling();
             } else {
-                localStorage.removeItem('nexusToken');
+                sessionStorage.removeItem('nexusToken');
                 showTokenModal("Invalid cached token. Please re-authenticate.");
             }
         } else {

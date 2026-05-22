@@ -80,3 +80,34 @@ func TestWebLearnerRedirectSSRF(t *testing.T) {
 		t.Errorf("expected SSRF redirect error, got instead: %v", err)
 	}
 }
+
+func TestRedirectHopLimit(t *testing.T) {
+	// Create a chain of 6 redirect hops (exceeds the 5-hop limit)
+	hopCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hopCount++
+		if hopCount < 8 {
+			// Redirect back to ourselves (infinite loop that should be stopped at hop 5)
+			http.Redirect(w, r, r.URL.String(), http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	wl := NewWebLearner()
+
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wl.Client.Do(req)
+	if err == nil {
+		t.Fatal("expected request to fail due to too many redirects, but it succeeded")
+	}
+
+	if !strings.Contains(err.Error(), "too many redirects") && !strings.Contains(err.Error(), "SSRF prevention") {
+		t.Errorf("expected redirect hop limit error, got: %v", err)
+	}
+}
