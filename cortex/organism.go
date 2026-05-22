@@ -302,15 +302,17 @@ func (o *Organism) Process(input string) string {
 	// association expansion. This compensates for the false-overlap
 	// problem of union-encoded SDRs and enables matching rephrased
 	// queries by expanding keywords through learned word associations.
+	// Threshold=2 requires at least 2 stemmed keyword matches to
+	// avoid false positives from single-stem coincidences.
 	if !memoryUsed || memorySimilarity < o.Config.PrefrontalConfThreshold {
 		inputTokens := Tokenize(input)
 		// Try expanded recall first (uses Brain associations for synonym expansion).
-		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywordsExpanded(inputTokens, 1, combinedSDR, o.Brain); kwOK && kwScore > memorySimilarity {
+		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywordsExpanded(inputTokens, 2, combinedSDR, o.Brain); kwOK && kwScore > memorySimilarity {
 			responseSDR = kwMem.Output
 			memoryUsed = true
 			memorySimilarity = kwScore
 			memoryText = extractAnswerFromContext(kwMem.Context)
-		} else if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, 1, combinedSDR); kwOK && kwScore > memorySimilarity {
+		} else if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, 2, combinedSDR); kwOK && kwScore > memorySimilarity {
 			// Fall back to non-expanded keyword recall.
 			responseSDR = kwMem.Output
 			memoryUsed = true
