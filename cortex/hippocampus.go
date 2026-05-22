@@ -620,6 +620,18 @@ func (h *Hippocampus) Size() int {
 	return len(h.Memories)
 }
 
+// GetAllContexts returns all stored memory context strings.
+// Used by self-training to replay memories through the Transformer.
+func (h *Hippocampus) GetAllContexts() []string {
+	contexts := make([]string, 0, len(h.Memories))
+	for i := range h.Memories {
+		if h.Memories[i].Context != "" {
+			contexts = append(contexts, h.Memories[i].Context)
+		}
+	}
+	return contexts
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Persistence — Save / Load
 // ─────────────────────────────────────────────────────────────────────

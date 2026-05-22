@@ -661,7 +661,19 @@ func (o *Organism) Sleep() []string {
 	// Merge consolidation logs before self-train logs.
 	logs = append(consolidationLogs, logs...)
 
-	// 1. Hippocampal consolidation (LTP stabilisation + decay).
+	// 1.5. Broca 2.0 self-evolution: replay memories through Transformer.
+	// This is the key differentiator — the organism learns from its own
+	// experience during sleep, getting better at language over time.
+	if o.Transformer != nil && o.Tokenizer != nil {
+		memTrained, corpusTrained, avgLoss := o.SelfEvolve()
+		if memTrained+corpusTrained > 0 {
+			logs = append(logs, fmt.Sprintf(
+				"[SelfEvolve] Trained Broca 2.0: %d memories + %d corpus lines (avg loss: %.4f)",
+				memTrained, corpusTrained, avgLoss))
+		}
+	}
+
+	// 2. Hippocampal consolidation (LTP stabilisation + decay).
 	o.Hippocampus.Consolidate()
 
 	// 2. Brain pruning (forget old associations).
