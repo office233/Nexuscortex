@@ -266,6 +266,25 @@
         </div>
     </div>
 
+    <!-- Token Authorization Overlay -->
+    <div class="modal-overlay" id="token-modal">
+        <div class="modal-content glass-card" style="max-width: 420px; text-align: center;">
+            <div style="font-size: 2.5rem; margin-bottom: 5px;">🔑</div>
+            <h3>Nexus Authentication Required</h3>
+            <p class="modal-sub">Access to the cognitive control console requires a security token. You can find this token in the server launch terminal.</p>
+            
+            <div class="input-container" style="text-align: left; width: 100%;">
+                <label for="token-input" style="font-size: 0.8rem; color: var(--text-sub); display: block; margin-bottom: 8px;">Security Token:</label>
+                <input type="text" id="token-input" placeholder="Enter X-Nexus-Token..." autocomplete="off" style="width: 100%; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 16px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; text-align: center; outline: none; transition: var(--transition-smooth);">
+                <span id="token-error" style="color: var(--neon-red); font-size: 0.75rem; margin-top: 6px; display: none;">Invalid token. Please try again.</span>
+            </div>
+
+            <div class="modal-buttons" style="display: flex; justify-content: center; width: 100%;">
+                <button id="btn-token-submit" class="btn btn-primary" style="width: 100%;">Authorize Dashboard</button>
+            </div>
+        </div>
+    </div>
+
     <script src="index.js"></script>
 </body>
 </html>

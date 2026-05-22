@@ -168,6 +168,10 @@ func runComprehensive(cases []ComprehensiveCase, newOrg func() *cortex.Organism)
 
 // wordOverlap computes the ratio of expected words found in the response.
 func wordOverlap(response, expected string) float64 {
+	trimmed := strings.Trim(strings.TrimSpace(response), " \t\n\r.,;:!?\"'()[]{}")
+	if trimmed == "" || trimmed == "?" || trimmed == "." {
+		return 0.0
+	}
 	expectedWords := tokenize(expected)
 	if len(expectedWords) == 0 {
 		return 1.0 // vacuously true

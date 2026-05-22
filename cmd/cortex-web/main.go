@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -42,9 +43,7 @@ type Server struct {
 func generateRandomToken() string {
 	bytes := make([]byte, 16)
 	if _, err := crand.Read(bytes); err != nil {
-		for i := range bytes {
-			bytes[i] = byte(rand.Intn(256))
-		}
+		log.Fatal("CRITICAL: Failed to generate secure random token via crypto/rand: ", err)
 	}
 	return hex.EncodeToString(bytes)
 }
@@ -74,6 +73,7 @@ func main() {
 	cfg.WebBindAddr = *bindAddr
 	cfg.Demo = false // Server handles interactivity dynamically
 
+	explicitTokenPassed := *authToken != "" && *authToken != "none"
 	token := *authToken
 	if token == "" {
 		token = generateRandomToken()
@@ -81,8 +81,9 @@ func main() {
 		token = ""
 	}
 
-	if cfg.WebBindAddr != "127.0.0.1" && cfg.WebBindAddr != "localhost" && token == "" {
-		log.Fatal("refusing non-loopback bind without auth token")
+	nonLoopback := cfg.WebBindAddr != "127.0.0.1" && cfg.WebBindAddr != "localhost" && cfg.WebBindAddr != ""
+	if nonLoopback && !explicitTokenPassed {
+		log.Fatal("Forbidden: network-exposed bindings require an explicit user-specified token via -token")
 	}
 
 	// Print visual launch banner
@@ -128,52 +129,7 @@ func main() {
 	http.Handle("/", staticFS)
 
 	// REST API Endpoints
-	http.HandleFunc("/api/token", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		// Strict Same-Origin/Referer Verification for the token retrieval itself
-		origin := r.Header.Get("Origin")
-		referer := r.Header.Get("Referer")
-		allowedOrigins := []string{
-			fmt.Sprintf("http://localhost:%d", server.port),
-			fmt.Sprintf("http://127.0.0.1:%d", server.port),
-			fmt.Sprintf("http://[::1]:%d", server.port),
-		}
-		if server.org.Config.WebBindAddr != "127.0.0.1" && server.org.Config.WebBindAddr != "localhost" {
-			allowedOrigins = append(allowedOrigins, fmt.Sprintf("http://%s:%d", server.org.Config.WebBindAddr, server.port))
-		}
-
-		if origin != "" {
-			matched := false
-			for _, o := range allowedOrigins {
-				if origin == o {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				http.Error(w, "Forbidden: invalid Origin", http.StatusForbidden)
-				return
-			}
-		} else if referer != "" {
-			matched := false
-			for _, o := range allowedOrigins {
-				if len(referer) >= len(o) && referer[:len(o)] == o {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				http.Error(w, "Forbidden: invalid Referer", http.StatusForbidden)
-				return
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": server.token})
-	})
+	// (Removed GET /api/token to prevent session security leakage)
 
 	http.HandleFunc("/api/stats", server.GetStatsHandler)
 	http.HandleFunc("/api/chat", server.ChatHandler)
@@ -260,11 +216,13 @@ func main() {
 
 // validateRequest verifies the security token and Same-Origin headers for mutating calls
 func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
-	// 1. Validate the X-Nexus-Token custom header
-	token := r.Header.Get("X-Nexus-Token")
-	if token == "" || token != s.token {
-		http.Error(w, "Unauthorized: invalid or missing X-Nexus-Token", http.StatusUnauthorized)
-		return false
+	// 1. Validate the X-Nexus-Token custom header if security token is enabled
+	if s.token != "" {
+		token := r.Header.Get("X-Nexus-Token")
+		if token == "" || token != s.token {
+			http.Error(w, "Unauthorized: invalid or missing X-Nexus-Token", http.StatusUnauthorized)
+			return false
+		}
 	}
 
 	// 2. Perform strict Same-Origin / Referer validation
@@ -294,9 +252,15 @@ func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
 			return false
 		}
 	} else if referer != "" {
+		u, err := url.Parse(referer)
+		if err != nil {
+			http.Error(w, "Forbidden: invalid Referer header", http.StatusForbidden)
+			return false
+		}
+		refOrigin := fmt.Sprintf("%s://%s", u.Scheme, u.Host)
 		matched := false
 		for _, o := range allowedOrigins {
-			if len(referer) >= len(o) && referer[:len(o)] == o {
+			if refOrigin == o {
 				matched = true
 				break
 			}

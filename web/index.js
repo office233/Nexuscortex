@@ -177,23 +177,53 @@ document.addEventListener('DOMContentLoaded', () => {
             if (res.ok) {
                 const stats = await res.json();
                 updateDashboard(stats);
+            } else if (res.status === 401) {
+                if (pollingInterval) clearInterval(pollingInterval);
+                localStorage.removeItem('nexusToken');
+                showTokenModal("Session expired or token is invalid. Please re-authenticate.");
             }
         } catch (err) {
             console.error("Failed to fetch biological stats:", err);
         }
     }
 
-    async function fetchToken() {
+    const tokenModal = document.getElementById('token-modal');
+    const tokenInput = document.getElementById('token-input');
+    const btnTokenSubmit = document.getElementById('btn-token-submit');
+    const tokenError = document.getElementById('token-error');
+
+    function showTokenModal(errorMsg = '') {
+        tokenModal.classList.add('active');
+        if (errorMsg) {
+            tokenError.innerText = errorMsg;
+            tokenError.style.display = 'block';
+        } else {
+            tokenError.style.display = 'none';
+        }
+        tokenInput.value = '';
+        tokenInput.focus();
+    }
+
+    function hideTokenModal() {
+        tokenModal.classList.remove('active');
+    }
+
+    async function verifyToken() {
         try {
-            const res = await fetch('/api/token');
+            const res = await fetch('/api/stats', {
+                headers: {
+                    'X-Nexus-Token': nexusToken
+                }
+            });
             if (res.ok) {
-                const data = await res.json();
-                nexusToken = data.token;
-            } else {
-                console.error("Token fetch returned non-OK status:", res.status);
+                const stats = await res.json();
+                updateDashboard(stats);
+                return true;
             }
+            return false;
         } catch (err) {
-            console.error("Failed to fetch API security token:", err);
+            console.error("Token verification failed:", err);
+            return false;
         }
     }
 
@@ -251,7 +281,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateDashboard(data.stats);
                     }
                 } else {
-                    throw new Error("Learning backend error");
+                    handleApiError(response, "Learning backend error");
                 }
             } else {
                 // ── Cognitive dialogue pipeline ─────────────────────────────
@@ -292,7 +322,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateDashboard(data.stats);
                     }
                 } else {
-                    throw new Error("Dialogue backend error");
+                    handleApiError(response, "Dialogue backend error");
                 }
             }
         } catch (err) {
@@ -346,7 +376,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: { 'X-Nexus-Token': nexusToken }
             });
-            if (!res.ok) throw new Error("Consolidation routine crashed");
+            if (!res.ok) {
+                handleApiError(res, "Consolidation routine crashed");
+            }
             const delta = await res.json();
             
             // Console print speed transition runner
@@ -597,7 +629,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateDashboard(data.stats);
                 }
             } else {
-                throw new Error("Dialogue reward handler rejected packet");
+                handleApiError(res, "Dialogue reward handler rejected packet");
             }
         } catch (err) {
             console.error("Dopamine feed transmission crashed:", err);
@@ -639,7 +671,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: { 'X-Nexus-Token': nexusToken }
             });
-            if (!res.ok) throw new Error("Autonomous reflection process faulted");
+            if (!res.ok) {
+                handleApiError(res, "Autonomous reflection process faulted");
+            }
             const delta = await res.json();
             
             const reflectionLogs = delta.console_logs || [];
@@ -741,10 +775,68 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnSelfTrain.addEventListener('click', triggerSelfTrain);
 
+    // Helper function for API errors and revocation
+    function handleApiError(res, defaultErrorMsg) {
+        if (res.status === 401) {
+            if (pollingInterval) clearInterval(pollingInterval);
+            localStorage.removeItem('nexusToken');
+            showTokenModal("Session expired or token is invalid. Please re-authenticate.");
+            throw new Error("Unauthorized");
+        }
+        throw new Error(defaultErrorMsg);
+    }
+
+    // Submit handler inside manual token overlay
+    btnTokenSubmit.addEventListener('click', async () => {
+        const enteredToken = tokenInput.value.trim();
+        if (!enteredToken) {
+            showTokenModal("Token cannot be empty.");
+            return;
+        }
+        nexusToken = enteredToken;
+        localStorage.setItem('nexusToken', enteredToken);
+        
+        const success = await verifyToken();
+        if (success) {
+            hideTokenModal();
+            startPolling();
+        } else {
+            showTokenModal("Invalid or unauthorized token.");
+        }
+    });
+
+    tokenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            btnTokenSubmit.click();
+        }
+    });
+
     // Initial setup
     async function initialize() {
-        await fetchToken();
-        startPolling();
+        const urlParams = new URLSearchParams(window.location.search);
+        const tokenParam = urlParams.get('token');
+        if (tokenParam) {
+            nexusToken = tokenParam;
+            localStorage.setItem('nexusToken', tokenParam);
+            // Clean up URL parameter to avoid leaking in history or screen share
+            urlParams.delete('token');
+            const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+            window.history.replaceState({}, document.title, newUrl);
+        } else {
+            nexusToken = localStorage.getItem('nexusToken') || '';
+        }
+
+        if (nexusToken) {
+            const success = await verifyToken();
+            if (success) {
+                startPolling();
+            } else {
+                localStorage.removeItem('nexusToken');
+                showTokenModal("Invalid cached token. Please re-authenticate.");
+            }
+        } else {
+            showTokenModal();
+        }
     }
     initialize();
 });

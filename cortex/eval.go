@@ -111,6 +111,12 @@ func runSuite(name string, cases []TestCase, organismForCase func() *Organism) S
 		trimmedInput := strings.ToLower(strings.TrimSpace(tc.Input))
 		trimmedResponse := strings.ToLower(strings.TrimSpace(response))
 
+		responseClean := strings.Trim(trimmedResponse, " \t\n\r.,;:!?\"'()[]{}")
+		if responseClean == "" || responseClean == "?" || responseClean == "." {
+			passed = false
+			failureReasons = append(failureReasons, "degenerate response")
+		}
+
 		if trimmedInput == trimmedResponse {
 			echoed = true
 			res.Echoed++

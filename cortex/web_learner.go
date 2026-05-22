@@ -77,6 +77,12 @@ func NewWebLearnerFromConfig(cfg Config) *WebLearner {
 	return &WebLearner{
 		Client: &http.Client{
 			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if !isAllowedURL(req.URL.String()) {
+					return fmt.Errorf("SSRF prevention: blocked redirect to %s", req.URL.String())
+				}
+				return nil
+			},
 		},
 		RateLimit:   rateLimit,
 		BodyLimit:   int64(bodyLimitMB) << 20,
@@ -110,7 +116,7 @@ func isAllowedURL(targetURL string) bool {
 	if err != nil {
 		return false
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != "https" {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())

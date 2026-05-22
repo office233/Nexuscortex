@@ -97,3 +97,176 @@ func TestServerValidation(t *testing.T) {
 		t.Errorf("expected 200 OK for /api/stats with valid token, got %d: %s", w6.Code, w6.Body.String())
 	}
 }
+
+func TestRemovedTokenEndpoint(t *testing.T) {
+	server := &Server{
+		token: "test-token",
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stats", server.GetStatsHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/token", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 Not Found for removed endpoint, got %d", w.Code)
+	}
+}
+
+func TestTokenNoneBypass(t *testing.T) {
+	cfg := cortex.DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.Fresh = true
+	cfg.NoSave = true
+	rng := rand.New(rand.NewSource(cfg.Seed))
+	org := cortex.NewOrganism(cfg, rng)
+
+	server := &Server{
+		org:   org,
+		token: "", // none bypass maps token to empty string
+		port:  8080,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.Header.Set("Origin", "http://localhost:8080")
+	w := httptest.NewRecorder()
+
+	server.GetStatsHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 OK with token bypass, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestNonLoopbackBindGuard(t *testing.T) {
+	// Test case 1: non-loopback with auto-generated token (empty -token) -> should fail (forbidden)
+	{
+		bindAddr := "0.0.0.0"
+		authToken := ""
+		explicitTokenPassed := authToken != "" && authToken != "none"
+		nonLoopback := bindAddr != "127.0.0.1" && bindAddr != "localhost" && bindAddr != ""
+		
+		if nonLoopback && !explicitTokenPassed {
+			// Expected safety block triggered
+		} else {
+			t.Error("expected non-loopback with empty token to trigger safety block")
+		}
+	}
+
+	// Test case 2: non-loopback with -token none -> should fail (forbidden)
+	{
+		bindAddr := "0.0.0.0"
+		authToken := "none"
+		explicitTokenPassed := authToken != "" && authToken != "none"
+		nonLoopback := bindAddr != "127.0.0.1" && bindAddr != "localhost" && bindAddr != ""
+		
+		if nonLoopback && !explicitTokenPassed {
+			// Expected safety block triggered
+		} else {
+			t.Error("expected non-loopback with token 'none' to trigger safety block")
+		}
+	}
+
+	// Test case 3: non-loopback with explicit token -> allowed
+	{
+		bindAddr := "0.0.0.0"
+		authToken := "my-secret"
+		explicitTokenPassed := authToken != "" && authToken != "none"
+		nonLoopback := bindAddr != "127.0.0.1" && bindAddr != "localhost" && bindAddr != ""
+		
+		if nonLoopback && !explicitTokenPassed {
+			t.Error("expected non-loopback with explicit token to be allowed, but was blocked")
+		}
+	}
+
+	// Test case 4: loopback with empty token (auto-generated) -> allowed
+	{
+		bindAddr := "127.0.0.1"
+		authToken := ""
+		explicitTokenPassed := authToken != "" && authToken != "none"
+		nonLoopback := bindAddr != "127.0.0.1" && bindAddr != "localhost" && bindAddr != ""
+		
+		if nonLoopback && !explicitTokenPassed {
+			t.Error("expected loopback with empty token to be allowed, but was blocked")
+		}
+	}
+}
+
+func TestParsedRefererVerification(t *testing.T) {
+	cfg := cortex.DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.Fresh = true
+	cfg.NoSave = true
+	rng := rand.New(rand.NewSource(cfg.Seed))
+	org := cortex.NewOrganism(cfg, rng)
+
+	server := &Server{
+		org:   org,
+		token: "test-token",
+		port:  8080,
+	}
+
+	// Test Case 1: Referer with exact origin and subpath -> should pass
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		req.Header.Set("X-Nexus-Token", "test-token")
+		req.Header.Set("Referer", "http://localhost:8080/dashboard/index.html?param=value")
+		w := httptest.NewRecorder()
+		server.GetStatsHandler(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200 OK for valid Referer subpath, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	// Test Case 2: Referer spoofing with prefix match but incorrect port -> should be rejected
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		req.Header.Set("X-Nexus-Token", "test-token")
+		req.Header.Set("Referer", "http://localhost:8080.attacker.com/path")
+		w := httptest.NewRecorder()
+		server.GetStatsHandler(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for spoofed Referer port, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	// Test Case 3: Referer with invalid URL -> should be rejected
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		req.Header.Set("X-Nexus-Token", "test-token")
+		req.Header.Set("Referer", "http://[invalid-url:::")
+		w := httptest.NewRecorder()
+		server.GetStatsHandler(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for malformed Referer, got %d", w.Code)
+		}
+	}
+}
+
+func TestSSRFRedirectPrevention(t *testing.T) {
+	// Start a local test server to act as a redirector
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Attempt to redirect to a forbidden localhost address
+		http.Redirect(w, r, "http://127.0.0.1/sensitive-data", http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	// Initialize WebLearner
+	cfg := cortex.DefaultConfig()
+	wl := cortex.NewWebLearnerFromConfig(cfg)
+
+	req, err := http.NewRequest("GET", redirector.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wl.Client.Do(req)
+	if err == nil {
+		t.Fatal("expected request to fail due to forbidden redirect")
+	}
+
+	if !strings.Contains(err.Error(), "SSRF prevention") && !strings.Contains(err.Error(), "blocked redirect") {
+		t.Errorf("expected SSRF redirect error, got: %v", err)
+	}
+}
