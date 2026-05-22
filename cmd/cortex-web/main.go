@@ -85,6 +85,10 @@ func main() {
 	if nonLoopback && !explicitTokenPassed {
 		log.Fatal("Forbidden: network-exposed bindings require an explicit user-specified token via -token")
 	}
+	if nonLoopback {
+		fmt.Println("  \u26a0\ufe0f  WARNING: Network-exposed binding WITHOUT TLS.")
+		fmt.Println("     Token is transmitted in cleartext. Use a reverse proxy with TLS for production.")
+	}
 
 	// Print visual launch banner
 	fmt.Println()
@@ -128,16 +132,20 @@ func main() {
 	staticFS := http.FileServer(http.FS(web.Assets))
 	http.Handle("/", securityHeaders(staticFS))
 
-	// REST API Endpoints
+	// REST API Endpoints — all wrapped by centralized apiMiddleware
+	// which enforces security headers + token auth + origin validation
+	// on every request automatically. Individual handlers do NOT need to
+	// call validateAuth() themselves.
 	// (Removed GET /api/token to prevent session security leakage)
-
-	http.HandleFunc("/api/stats", server.GetStatsHandler)
-	http.HandleFunc("/api/chat", server.ChatHandler)
-	http.HandleFunc("/api/learn", server.LearnHandler)
-	http.HandleFunc("/api/sleep", server.SleepHandler)
-	http.HandleFunc("/api/save", server.SaveHandler)
-	http.HandleFunc("/api/feedback", server.FeedbackHandler)
-	http.HandleFunc("/api/selftrain", server.SelfTrainHandler)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/stats", server.GetStatsHandler)
+	apiMux.HandleFunc("/api/chat", server.ChatHandler)
+	apiMux.HandleFunc("/api/learn", server.LearnHandler)
+	apiMux.HandleFunc("/api/sleep", server.SleepHandler)
+	apiMux.HandleFunc("/api/save", server.SaveHandler)
+	apiMux.HandleFunc("/api/feedback", server.FeedbackHandler)
+	apiMux.HandleFunc("/api/selftrain", server.SelfTrainHandler)
+	http.Handle("/api/", server.apiMiddleware(apiMux))
 
 	// ── Graceful Shutdown Handler ────────────────────────────────────
 	sigChan := make(chan os.Signal, 1)
@@ -228,22 +236,32 @@ func securityHeaders(next http.Handler) http.Handler {
 // Called by both the static file middleware and API handlers.
 func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+		"default-src 'self'; script-src 'self'; style-src 'self'; "+
 			"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 }
 
+// apiMiddleware wraps all /api/* handlers with centralized security headers
+// and authentication. Individual handlers do NOT need to call validateAuth.
+func (s *Server) apiMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		if !s.validateAuth(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // HTTP API Handlers & Security Validations
 // ─────────────────────────────────────────────────────────────────────
 
-// validateRequest verifies the security token and Same-Origin headers for mutating calls
-func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
-	// Inject security headers on every API response (including error paths)
-	setSecurityHeaders(w)
-
+// validateAuth verifies the security token and Same-Origin headers.
+// Called exclusively by apiMiddleware — individual handlers do NOT call this.
+func (s *Server) validateAuth(w http.ResponseWriter, r *http.Request) bool {
 	// 1. Validate the X-Nexus-Token custom header if security token is enabled
 	if s.token != "" {
 		token := r.Header.Get("X-Nexus-Token")
@@ -308,9 +326,6 @@ func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
 
 // GetStatsHandler returns JSON representation of internal modules
 func (s *Server) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
-	if !s.validateRequest(w, r) {
-		return
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -329,9 +344,6 @@ func (s *Server) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ChatHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.validateRequest(w, r) {
 		return
 	}
 
@@ -424,9 +436,6 @@ func (s *Server) LearnHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.validateRequest(w, r) {
-		return
-	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
@@ -478,9 +487,6 @@ func (s *Server) LearnHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SleepHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.validateRequest(w, r) {
 		return
 	}
 
@@ -552,9 +558,6 @@ func (s *Server) SaveHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.validateRequest(w, r) {
-		return
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -578,9 +581,6 @@ func (s *Server) SaveHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.validateRequest(w, r) {
 		return
 	}
 
@@ -627,9 +627,6 @@ func (s *Server) FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SelfTrainHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.validateRequest(w, r) {
 		return
 	}
 

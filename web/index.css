@@ -564,6 +564,7 @@ input:checked + .slider:before {
 
 .progress-bar {
     height: 100%;
+    width: 0%;
     background: linear-gradient(90deg, var(--neon-purple) 0%, var(--neon-violet) 100%);
     border-radius: 2px;
     box-shadow: 0 0 8px var(--neon-violet);
@@ -610,6 +611,7 @@ input:checked + .slider:before {
 
 .salience-meter {
     height: 100%;
+    width: 0%;
     background: linear-gradient(90deg, var(--neon-cyan) 0%, var(--neon-pink) 100%);
     border-radius: 5px;
     box-shadow: 0 0 10px rgba(248, 87, 166, 0.5);
@@ -705,6 +707,8 @@ input:checked + .slider:before {
     position: absolute;
     width: 12px;
     height: 12px;
+    left: 50%;
+    bottom: 50%;
     background-color: var(--neon-green);
     border-radius: 50%;
     transform: translate(-50%, 50%); /* Centered exact offsets */
@@ -787,6 +791,7 @@ input:checked + .slider:before {
 
 .drive-bar {
     height: 100%;
+    width: 0%;
     background: linear-gradient(90deg, var(--neon-blue) 0%, var(--neon-cyan) 100%);
     border-radius: 3px;
     transition: width 0.5s ease-out;
@@ -809,6 +814,11 @@ input:checked + .slider:before {
 .maintenance-panel button {
     margin: 0 20px;
     width: calc(100% - 40px);
+}
+
+#btn-selftrain {
+    margin-top: 10px;
+    margin-bottom: 20px;
 }
 
 
@@ -1191,4 +1201,70 @@ input:checked + .slider:before {
 
 #btn-correction-cancel:hover {
     background: rgba(255, 255, 255, 0.1);
+}
+
+
+/* =====================================================================
+   TOKEN AUTHORIZATION MODAL (CSP-safe: no inline styles)
+   ===================================================================== */
+#token-modal .modal-content {
+    max-width: 420px;
+    text-align: center;
+}
+
+.token-icon {
+    font-size: 2.5rem;
+    margin-bottom: 5px;
+}
+
+.token-url-code {
+    color: var(--neon-cyan);
+    font-size: 0.75rem;
+}
+
+#token-modal .input-container {
+    text-align: left;
+    width: 100%;
+}
+
+#token-modal .input-container label {
+    display: block;
+    margin-bottom: 8px;
+}
+
+#token-input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: var(--text-main);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    text-align: center;
+    outline: none;
+    transition: var(--transition-smooth);
+}
+
+#token-input:focus {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 10px rgba(0, 242, 254, 0.25);
+    background: rgba(0, 0, 0, 0.5);
+}
+
+#token-error {
+    color: var(--neon-red);
+    font-size: 0.75rem;
+    margin-top: 6px;
+    display: none;
+}
+
+#token-modal .modal-buttons {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+}
+
+#btn-token-submit {
+    width: 100%;
 }

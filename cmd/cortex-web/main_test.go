@@ -12,30 +12,50 @@ import (
 	"nexus-cortex/cortex"
 )
 
-func TestServerValidation(t *testing.T) {
-	// Initialize minimal organism config
+// newTestMux creates a ServeMux with all API routes wrapped by apiMiddleware,
+// matching the production routing structure exactly.
+func newTestMux(server *Server) *http.ServeMux {
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/stats", server.GetStatsHandler)
+	apiMux.HandleFunc("/api/chat", server.ChatHandler)
+	apiMux.HandleFunc("/api/learn", server.LearnHandler)
+	apiMux.HandleFunc("/api/sleep", server.SleepHandler)
+	apiMux.HandleFunc("/api/save", server.SaveHandler)
+	apiMux.HandleFunc("/api/feedback", server.FeedbackHandler)
+	apiMux.HandleFunc("/api/selftrain", server.SelfTrainHandler)
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", server.apiMiddleware(apiMux))
+	return mux
+}
+
+// newTestServer creates a minimal Server with fresh organism for testing.
+func newTestServer(t *testing.T, token string) *Server {
 	cfg := cortex.DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.Fresh = true
 	cfg.NoSave = true
-
 	rng := rand.New(rand.NewSource(cfg.Seed))
 	org := cortex.NewOrganism(cfg, rng)
-
-	server := &Server{
+	return &Server{
 		org:        org,
 		lastSource: "Prefrontal Think",
 		lastFocus:  "",
-		token:      "test-secure-token-12345",
+		token:      token,
 		port:       8080,
 	}
+}
+
+func TestServerValidation(t *testing.T) {
+	server := newTestServer(t, "test-secure-token-12345")
+	mux := newTestMux(server)
 
 	// 1. Mutating POST without token should return 401 Unauthorized
 	req1 := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"message":"test"}`))
 	req1.Header.Set("Origin", "http://localhost:8080")
 	w1 := httptest.NewRecorder()
 
-	server.ChatHandler(w1, req1)
+	mux.ServeHTTP(w1, req1)
 	if w1.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 Unauthorized, got %d: %s", w1.Code, w1.Body.String())
 	}
@@ -45,25 +65,24 @@ func TestServerValidation(t *testing.T) {
 	req2.Header.Set("X-Nexus-Token", "test-secure-token-12345")
 	w2 := httptest.NewRecorder()
 
-	server.ChatHandler(w2, req2)
+	mux.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusForbidden {
 		t.Errorf("expected 403 Forbidden, got %d: %s", w2.Code, w2.Body.String())
 	}
 
-	// 3. Mutating POST with correct token and valid Origin should succeed (or return 200/400 depending on body)
+	// 3. Mutating POST with correct token and valid Origin should succeed
 	req3 := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"message":"Hello"}`))
 	req3.Header.Set("X-Nexus-Token", "test-secure-token-12345")
 	req3.Header.Set("Origin", "http://localhost:8080")
 	w3 := httptest.NewRecorder()
 
-	server.ChatHandler(w3, req3)
-	// Success path returns 200 JSON
+	mux.ServeHTTP(w3, req3)
 	if w3.Code != http.StatusOK {
 		t.Errorf("expected 200 OK, got %d: %s", w3.Code, w3.Body.String())
 	}
 
 	// 4. Mutating POST with body exceeding 1MB limit should fail
-	largeBody := strings.Repeat("A", (1<<20)+100) // > 1MB
+	largeBody := strings.Repeat("A", (1<<20)+100)
 	payload, _ := json.Marshal(map[string]string{"message": largeBody})
 
 	req4 := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(payload))
@@ -71,7 +90,7 @@ func TestServerValidation(t *testing.T) {
 	req4.Header.Set("Origin", "http://localhost:8080")
 	w4 := httptest.NewRecorder()
 
-	server.ChatHandler(w4, req4)
+	mux.ServeHTTP(w4, req4)
 	if w4.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("expected 413 Request Entity Too Large, got %d: %s", w4.Code, w4.Body.String())
 	}
@@ -81,7 +100,7 @@ func TestServerValidation(t *testing.T) {
 	req5.Header.Set("Origin", "http://localhost:8080")
 	w5 := httptest.NewRecorder()
 
-	server.GetStatsHandler(w5, req5)
+	mux.ServeHTTP(w5, req5)
 	if w5.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 Unauthorized for /api/stats without token, got %d", w5.Code)
 	}
@@ -92,48 +111,45 @@ func TestServerValidation(t *testing.T) {
 	req6.Header.Set("Origin", "http://localhost:8080")
 	w6 := httptest.NewRecorder()
 
-	server.GetStatsHandler(w6, req6)
+	mux.ServeHTTP(w6, req6)
 	if w6.Code != http.StatusOK {
 		t.Errorf("expected 200 OK for /api/stats with valid token, got %d: %s", w6.Code, w6.Body.String())
 	}
 }
 
 func TestRemovedTokenEndpoint(t *testing.T) {
-	server := &Server{
-		token: "test-token",
+	server := newTestServer(t, "test-token")
+	mux := newTestMux(server)
+
+	// Without token, middleware blocks with 401 (prevents endpoint enumeration)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/token", nil)
+	req1.Header.Set("Origin", "http://localhost:8080")
+	w1 := httptest.NewRecorder()
+	mux.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for removed endpoint without token, got %d", w1.Code)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/stats", server.GetStatsHandler)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/token", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404 Not Found for removed endpoint, got %d", w.Code)
+	// With valid token, the inner mux returns 404 (endpoint truly removed)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/token", nil)
+	req2.Header.Set("X-Nexus-Token", "test-token")
+	req2.Header.Set("Origin", "http://localhost:8080")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for removed endpoint with valid token, got %d", w2.Code)
 	}
 }
 
 func TestTokenNoneBypass(t *testing.T) {
-	cfg := cortex.DefaultConfig()
-	cfg.DataDir = t.TempDir()
-	cfg.Fresh = true
-	cfg.NoSave = true
-	rng := rand.New(rand.NewSource(cfg.Seed))
-	org := cortex.NewOrganism(cfg, rng)
-
-	server := &Server{
-		org:   org,
-		token: "", // none bypass maps token to empty string
-		port:  8080,
-	}
+	server := newTestServer(t, "") // token="" = none bypass
+	mux := newTestMux(server)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
 	req.Header.Set("Origin", "http://localhost:8080")
 	w := httptest.NewRecorder()
 
-	server.GetStatsHandler(w, req)
+	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 OK with token bypass, got %d: %s", w.Code, w.Body.String())
 	}
@@ -194,18 +210,8 @@ func TestNonLoopbackBindGuard(t *testing.T) {
 }
 
 func TestParsedRefererVerification(t *testing.T) {
-	cfg := cortex.DefaultConfig()
-	cfg.DataDir = t.TempDir()
-	cfg.Fresh = true
-	cfg.NoSave = true
-	rng := rand.New(rand.NewSource(cfg.Seed))
-	org := cortex.NewOrganism(cfg, rng)
-
-	server := &Server{
-		org:   org,
-		token: "test-token",
-		port:  8080,
-	}
+	server := newTestServer(t, "test-token")
+	mux := newTestMux(server)
 
 	// Test Case 1: Referer with exact origin and subpath -> should pass
 	{
@@ -213,7 +219,7 @@ func TestParsedRefererVerification(t *testing.T) {
 		req.Header.Set("X-Nexus-Token", "test-token")
 		req.Header.Set("Referer", "http://localhost:8080/dashboard/index.html?param=value")
 		w := httptest.NewRecorder()
-		server.GetStatsHandler(w, req)
+		mux.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Errorf("expected 200 OK for valid Referer subpath, got %d: %s", w.Code, w.Body.String())
 		}
@@ -225,7 +231,7 @@ func TestParsedRefererVerification(t *testing.T) {
 		req.Header.Set("X-Nexus-Token", "test-token")
 		req.Header.Set("Referer", "http://localhost:8080.attacker.com/path")
 		w := httptest.NewRecorder()
-		server.GetStatsHandler(w, req)
+		mux.ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("expected 403 Forbidden for spoofed Referer port, got %d: %s", w.Code, w.Body.String())
 		}
@@ -237,7 +243,7 @@ func TestParsedRefererVerification(t *testing.T) {
 		req.Header.Set("X-Nexus-Token", "test-token")
 		req.Header.Set("Referer", "http://[invalid-url:::")
 		w := httptest.NewRecorder()
-		server.GetStatsHandler(w, req)
+		mux.ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("expected 403 Forbidden for malformed Referer, got %d", w.Code)
 		}
@@ -245,26 +251,17 @@ func TestParsedRefererVerification(t *testing.T) {
 }
 
 // TestSecurityHeaders ensures all HTTP responses include required security headers
+// and that 'unsafe-inline' is NOT present in CSP.
 func TestSecurityHeaders(t *testing.T) {
-	cfg := cortex.DefaultConfig()
-	cfg.DataDir = t.TempDir()
-	cfg.Fresh = true
-	cfg.NoSave = true
-	rng := rand.New(rand.NewSource(cfg.Seed))
-	org := cortex.NewOrganism(cfg, rng)
-
-	server := &Server{
-		org:   org,
-		token: "test-token",
-		port:  8080,
-	}
+	server := newTestServer(t, "test-token")
+	mux := newTestMux(server)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
 	req.Header.Set("X-Nexus-Token", "test-token")
 	req.Header.Set("Origin", "http://localhost:8080")
 	w := httptest.NewRecorder()
 
-	server.GetStatsHandler(w, req)
+	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -282,6 +279,49 @@ func TestSecurityHeaders(t *testing.T) {
 			t.Errorf("missing required security header: %s", header)
 		} else if !strings.Contains(val, expectedSubstr) {
 			t.Errorf("header %s = %q, expected to contain %q", header, val, expectedSubstr)
+		}
+	}
+
+	// Verify 'unsafe-inline' is NOT in CSP
+	csp := w.Header().Get("Content-Security-Policy")
+	if strings.Contains(csp, "unsafe-inline") {
+		t.Errorf("CSP should not contain 'unsafe-inline', got: %s", csp)
+	}
+}
+
+// TestApiMiddlewareEnforcement verifies that the centralized middleware
+// handles auth for ALL endpoints without each handler needing validateAuth().
+func TestApiMiddlewareEnforcement(t *testing.T) {
+	server := newTestServer(t, "required-token")
+	mux := newTestMux(server)
+
+	// Every API endpoint should return 401 without token
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/stats"},
+		{http.MethodPost, "/api/chat"},
+		{http.MethodPost, "/api/learn"},
+		{http.MethodPost, "/api/sleep"},
+		{http.MethodPost, "/api/save"},
+		{http.MethodPost, "/api/feedback"},
+		{http.MethodPost, "/api/selftrain"},
+	}
+
+	for _, ep := range endpoints {
+		req := httptest.NewRequest(ep.method, ep.path, nil)
+		req.Header.Set("Origin", "http://localhost:8080")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: expected 401 without token, got %d", ep.method, ep.path, w.Code)
+		}
+
+		// Also verify security headers are present even on 401 errors
+		if w.Header().Get("X-Frame-Options") != "DENY" {
+			t.Errorf("%s %s: missing X-Frame-Options on 401 response", ep.method, ep.path)
 		}
 	}
 }

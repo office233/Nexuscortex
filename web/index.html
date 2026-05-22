@@ -93,7 +93,7 @@
                                 <span class="metric-label">Episodic Memories</span>
                                 <span id="vital-memories" class="metric-value text-glow-purple">0</span>
                                 <div class="progress-bar-container">
-                                    <div class="progress-bar" id="memory-progress-bar" style="width: 0%"></div>
+                                    <div class="progress-bar" id="memory-progress-bar"></div>
                                 </div>
                                 <span id="vital-memory-ratio" class="metric-subtext">0 / 10000 stored</span>
                             </div>
@@ -131,7 +131,7 @@
                         <div class="workspace-metric">
                             <span class="label">Prediction Error (Surprise):</span>
                             <div class="salience-meter-container">
-                                <div id="salience-meter" class="salience-meter" style="width: 0%"></div>
+                                <div id="salience-meter" class="salience-meter"></div>
                             </div>
                             <span id="vital-surprise-level" class="value">0 / 255</span>
                         </div>
@@ -167,7 +167,7 @@
                             <div class="axis y-axis"></div>
                             
                             <!-- Glowing mood vector dot -->
-                            <div class="mood-pointer" id="mood-pointer" style="left: 50%; bottom: 50%"></div>
+                            <div class="mood-pointer" id="mood-pointer"></div>
                         </div>
                         <div class="mood-stats-grid">
                             <div class="mood-stat">
@@ -193,27 +193,27 @@
                                 <span>Sleep Pressure</span>
                                 <span id="drive-sleep-pressure">0%</span>
                             </div>
-                            <div class="drive-bar-container"><div class="drive-bar" id="bar-sleep-pressure" style="width: 0%"></div></div>
+                            <div class="drive-bar-container"><div class="drive-bar" id="bar-sleep-pressure"></div></div>
                         </div>
                         <div class="drive-item">
                             <div class="drive-header">
                                 <span>Alertness Level</span>
                                 <span id="drive-alertness">0%</span>
                             </div>
-                            <div class="drive-bar-container"><div class="drive-bar" id="bar-alertness" style="width: 0%"></div></div>
+                            <div class="drive-bar-container"><div class="drive-bar" id="bar-alertness"></div></div>
                         </div>
                         <div class="drive-item">
                             <div class="drive-header">
                                 <span>Curiosity Drive</span>
                                 <span id="drive-curiosity">0%</span>
                             </div>
-                            <div class="drive-bar-container"><div class="drive-bar" id="bar-curiosity" style="width: 0%"></div></div>
+                            <div class="drive-bar-container"><div class="drive-bar" id="bar-curiosity"></div></div>
                         </div>
                     </div>
 
                     <!-- Glowing Offline Sleep button & Prefrontal Self-Reflection button -->
                     <button id="btn-sleep" class="btn btn-glow btn-danger btn-block">Consolidate Memories (Sleep)</button>
-                    <button id="btn-selftrain" class="btn btn-glow btn-primary btn-block" style="margin-top: 10px; margin-bottom: 20px;">Run Active Self-Reflection</button>
+                    <button id="btn-selftrain" class="btn btn-glow btn-primary btn-block">Run Active Self-Reflection</button>
                 </div>
             </section>
 
@@ -268,19 +268,19 @@
 
     <!-- Token Authorization Overlay -->
     <div class="modal-overlay" id="token-modal">
-        <div class="modal-content glass-card" style="max-width: 420px; text-align: center;">
-            <div style="font-size: 2.5rem; margin-bottom: 5px;">🔑</div>
+        <div class="modal-content glass-card">
+            <div class="token-icon">🔑</div>
             <h3>Nexus Authentication Required</h3>
-            <p class="modal-sub">Access to the cognitive control console requires a security token. You can find this token in the server launch terminal, or pass it via URL fragment: <code style="color: var(--neon-cyan); font-size: 0.75rem;">http://localhost:8080/#token=YOUR_TOKEN</code></p>
+            <p class="modal-sub">Access to the cognitive control console requires a security token. You can find this token in the server launch terminal, or pass it via URL fragment: <code class="token-url-code">http://localhost:8080/#token=YOUR_TOKEN</code></p>
             
-            <div class="input-container" style="text-align: left; width: 100%;">
-                <label for="token-input" style="font-size: 0.8rem; color: var(--text-sub); display: block; margin-bottom: 8px;">Security Token:</label>
-                <input type="text" id="token-input" placeholder="Enter X-Nexus-Token..." autocomplete="off" style="width: 100%; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 16px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; text-align: center; outline: none; transition: var(--transition-smooth);">
-                <span id="token-error" style="color: var(--neon-red); font-size: 0.75rem; margin-top: 6px; display: none;">Invalid token. Please try again.</span>
+            <div class="input-container">
+                <label for="token-input">Security Token:</label>
+                <input type="text" id="token-input" placeholder="Enter X-Nexus-Token..." autocomplete="off">
+                <span id="token-error">Invalid token. Please try again.</span>
             </div>
 
-            <div class="modal-buttons" style="display: flex; justify-content: center; width: 100%;">
-                <button id="btn-token-submit" class="btn btn-primary" style="width: 100%;">Authorize Dashboard</button>
+            <div class="modal-buttons">
+                <button id="btn-token-submit" class="btn btn-primary">Authorize Dashboard</button>
             </div>
         </div>
     </div>
