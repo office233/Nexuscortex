@@ -58,4 +58,27 @@ func TestConfigValidation(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for WebGPUTimeoutSecs > 120, got nil")
 	}
+
+	// 8. QuantumMultiSamples < 1 should be rejected
+	cfg = DefaultConfig()
+	cfg.QuantumMultiSamples = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for QuantumMultiSamples < 1, got nil")
+	}
+
+	// 9. QuantumMultiSamples > 16 should be rejected
+	cfg = DefaultConfig()
+	cfg.QuantumMultiSamples = 17
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for QuantumMultiSamples > 16, got nil")
+	}
+
+	// 10. Default quantum config values should be valid
+	cfg = DefaultConfig()
+	cfg.EnableQuantumInspired = true
+	cfg.QuantumTemperature = 128
+	cfg.QuantumMultiSamples = 4
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected quantum config to be valid, got error: %v", err)
+	}
 }

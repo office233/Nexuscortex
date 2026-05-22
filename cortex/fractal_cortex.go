@@ -25,6 +25,10 @@ type FractalCortex struct {
 	// When nil, all blocks are evaluated (backward compatible).
 	Router  *ExpertRouter
 
+	// QRouter enables quantum-inspired phase+SDR routing.
+	// When non-nil, used instead of Router for expert selection.
+	QRouter *QuantumRouter
+
 	// Journal accumulates weight changes for batch merge during Sleep().
 	Journal *PlasticityJournal
 }
@@ -41,6 +45,14 @@ func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
 
 	// Start with exactly 1 block
 	fc.SpawnNeurogenesis()
+
+	// Conditionally wire quantum-inspired routing.
+	// When EnableQuantumInspired is true, create a QuantumRouter that uses
+	// phase interference + SDR similarity for expert selection.
+	if cfg.EnableQuantumInspired && len(fc.Blocks) > 0 {
+		fc.QRouter = NewQuantumRouter(MaxFractalBlocks, cfg.SDRSize, 2)
+		fc.Journal = NewPlasticityJournal()
+	}
 
 	return fc
 }
@@ -135,6 +147,11 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 	}
 	if len(fc.Blocks) == 1 {
 		return fc.Blocks[0].ProcessToken(input)
+	}
+
+	// Use quantum-inspired routing if QRouter is available
+	if fc.QRouter != nil && len(fc.Blocks) > fc.QRouter.TopK {
+		return fc.ProcessTokenQuantum(input)
 	}
 
 	// Use top-k routing if Router is available
@@ -457,4 +474,96 @@ func (fc *FractalCortex) Load(dataDir string) error {
 // This must be called from Organism.Sleep() to re-enable neurogenesis.
 func (fc *FractalCortex) ResetGrowthLock() {
 	fc.GrowthLock = false
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Quantum-Inspired Routing Integration
+// ─────────────────────────────────────────────────────────────────────
+
+// ProcessTokenQuantum routes input through the top-K experts selected by
+// the QuantumRouter (phase interference + SDR similarity scoring).
+func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
+	if fc.QRouter == nil {
+		return fc.ProcessToken(input)
+	}
+
+	selected := fc.QRouter.RouteSDR(input)
+	if len(selected) == 0 {
+		return NewSDR(fc.Config.SDRSize)
+	}
+
+	// Single expert: no voting needed
+	if len(selected) == 1 {
+		idx := selected[0]
+		if idx >= len(fc.Blocks) {
+			return NewSDR(fc.Config.SDRSize)
+		}
+		result := fc.Blocks[idx].ProcessToken(input)
+		// Update expert embedding for learning
+		fc.QRouter.ExpertEmbeddings[idx] = fc.QRouter.ExpertEmbeddings[idx].Union(input)
+		return result
+	}
+
+	// Multiple experts: vote among selected only
+	dim := fc.Config.SDRSize
+	voteCounts := make([]int, dim)
+	var bestBlock SDR
+	var bestActive int
+
+	for _, idx := range selected {
+		if idx >= len(fc.Blocks) {
+			continue
+		}
+		output := fc.Blocks[idx].ProcessToken(input)
+		if output.ActiveCount > bestActive {
+			bestActive = output.ActiveCount
+			bestBlock = output
+		}
+		for _, bitIdx := range output.ActiveIndices() {
+			if bitIdx < dim {
+				voteCounts[bitIdx]++
+			}
+		}
+		// Update expert embedding for learning
+		fc.QRouter.ExpertEmbeddings[idx] = fc.QRouter.ExpertEmbeddings[idx].Union(input)
+	}
+
+	// Majority among selected
+	threshold := len(selected) / 2
+	result := NewSDR(dim)
+	for idx, count := range voteCounts {
+		if count > threshold {
+			result.Set(idx)
+		}
+	}
+
+	minActive := input.ActiveCount / 4
+	if minActive < 2 {
+		minActive = 2
+	}
+	if result.ActiveCount < minActive && bestActive > 0 {
+		return bestBlock
+	}
+
+	return result
+}
+
+// MergeJournal applies all pending PlasticityJournal entries into the
+// ternary weights of the cortex blocks. Called during Sleep().
+// Returns the total number of weight changes applied.
+func (fc *FractalCortex) MergeJournal() int {
+	if fc.Journal == nil || fc.Journal.Size() == 0 {
+		return 0
+	}
+
+	totalApplied := 0
+	for blockID, block := range fc.Blocks {
+		totalApplied += fc.Journal.Merge(block.SharedFeatureLayer, blockID, "feature")
+		totalApplied += fc.Journal.Merge(block.SharedOutputLayer, blockID, "output")
+	}
+
+	// Clear any remaining entries that didn't match any block/layer.
+	fc.Journal.Clear()
+
+	return totalApplied
 }

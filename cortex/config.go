@@ -231,6 +231,11 @@ type Config struct {
 
 	// WebGPU hardware acceleration configuration
 	WebGPUTimeoutSecs int `json:"webgpu_timeout_secs"`
+
+	// Quantum-Inspired Engine configuration
+	EnableQuantumInspired bool  `json:"enable_quantum_inspired"`  // Use QuantumRouter instead of ExpertRouter
+	QuantumTemperature     uint8 `json:"quantum_temperature"`       // PBit temperature (0=deterministic, 255=max stochastic)
+	QuantumMultiSamples    int   `json:"quantum_multi_samples"`     // Multi-sample passes (1=no multi-sample)
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -475,6 +480,11 @@ func DefaultConfig() Config {
 
 		// WebGPU defaults
 		WebGPUTimeoutSecs: 5,
+
+		// Quantum-Inspired Engine defaults (disabled by default for backward compat)
+		EnableQuantumInspired: false,
+		QuantumTemperature:    0,   // deterministic
+		QuantumMultiSamples:   1,   // no multi-sample
 	}
 }
 
@@ -623,6 +633,11 @@ func (c Config) Validate() error {
 	// Beam search constraints
 	if c.BeamSearchWidth <= 0 || c.BeamSearchWidth > 100 {
 		return fmt.Errorf("BeamSearchWidth must be in [1, 100], got %d", c.BeamSearchWidth)
+	}
+
+	// Quantum-Inspired Engine constraints
+	if c.QuantumMultiSamples < 1 || c.QuantumMultiSamples > 16 {
+		return fmt.Errorf("QuantumMultiSamples must be in [1, 16], got %d", c.QuantumMultiSamples)
 	}
 
 	return nil

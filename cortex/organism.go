@@ -697,6 +697,14 @@ func (o *Organism) Sleep() []string {
 	// 8. FractalCortex: reset growth lock to re-enable neurogenesis.
 	if o.FractalCortex != nil {
 		o.FractalCortex.ResetGrowthLock()
+
+		// 8.5. Merge pending PlasticityJournal entries into ternary weights.
+		if o.FractalCortex.Journal != nil && o.FractalCortex.Journal.Size() > 0 {
+			applied := o.FractalCortex.MergeJournal()
+			if applied > 0 {
+				logs = append(logs, fmt.Sprintf("[QuantumPlasticity] Merged %d journal entries into ternary weights.", applied))
+			}
+		}
 	}
 
 	// 8. Meta-learning: queue weak topics for auto-exploration.
