@@ -334,7 +334,7 @@ func (o *Organism) Process(input string) string {
 	if sameText(responseText, input) {
 		responseText = ""
 	}
-	if responseText != "" && confidence < o.Config.PrefrontalConfThreshold {
+	if responseText != "" && confidence < o.Config.PrefrontalConfThreshold && !(memoryUsed && memorySimilarity >= o.Config.PrefrontalConfThreshold) {
 		responseText = ""
 	}
 
