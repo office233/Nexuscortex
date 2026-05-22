@@ -232,15 +232,18 @@ func TestPBitLayerStochastic(t *testing.T) {
 	t.Logf("P-bit distribution (bias=50, temp=128): +1=%d, 0=%d, -1=%d",
 		counts[1], counts[0], counts[-1])
 
-	// With positive bias, +1 should be more frequent than -1
-	if counts[1] < counts[-1] {
-		t.Errorf("positive bias should produce more +1 than -1: got +1=%d, -1=%d",
-			counts[1], counts[-1])
+	// With positive bias, ALL fires should be +1, none should be -1
+	// (because sign is determined by raw activation direction, not random)
+	if counts[-1] > 0 {
+		t.Errorf("positive bias should never produce -1: got -1=%d", counts[-1])
 	}
 
-	// Should produce at least some of each (stochastic)
-	if counts[1] == trials || counts[-1] == trials {
-		t.Errorf("temperature>0 should produce variety, got all same")
+	// Should have some fires (+1) and some non-fires (0)
+	if counts[1] == 0 {
+		t.Error("should have some +1 outputs with positive bias")
+	}
+	if counts[0] == 0 {
+		t.Error("temperature>0 should produce some 0 (non-fire) outputs")
 	}
 }
 
@@ -253,7 +256,7 @@ func TestQuantumRouterInterference(t *testing.T) {
 		router.ExpertAmps[i] = 200
 	}
 
-	// Route with phase close to expert 0 (phase=0)
+	// Phase-only route with phase close to expert 0 (phase=0)
 	selected := router.Route(0)
 	t.Logf("Input phase=0: selected experts %v", selected)
 
@@ -272,6 +275,33 @@ func TestQuantumRouterInterference(t *testing.T) {
 
 	if selected2[0] != 4 {
 		t.Errorf("expected expert 4 first for phase=128, got %d", selected2[0])
+	}
+}
+
+func TestQuantumRouterSDR(t *testing.T) {
+	router := NewQuantumRouter(4, 1024, 2)
+
+	// Give expert 2 an embedding that overlaps with our input
+	input := NewSDR(1024)
+	input.Set(10)
+	input.Set(20)
+	input.Set(30)
+	input.Set(40)
+	input.Set(50)
+
+	router.ExpertEmbeddings[2] = input.Clone() // expert 2 matches perfectly
+
+	// Expert 0 has different bits
+	router.ExpertEmbeddings[0] = NewSDR(1024)
+	router.ExpertEmbeddings[0].Set(900)
+	router.ExpertEmbeddings[0].Set(901)
+
+	selected := router.RouteSDR(input)
+	t.Logf("RouteSDR: selected experts %v", selected)
+
+	// Expert 2 should be first (semantic match)
+	if selected[0] != 2 {
+		t.Errorf("expected expert 2 first (semantic match), got %d", selected[0])
 	}
 }
 

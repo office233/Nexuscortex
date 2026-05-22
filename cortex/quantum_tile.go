@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -43,7 +44,8 @@ type QuantumTile struct {
 }
 
 // NewQuantumTile wraps an existing TernaryTile with full amplitude and zero phase.
-// This makes it backward-compatible: amplitude=255 + phase=0 = classical behavior.
+// NOTE: amplitude=255 + phase=0 produces APPROXIMATELY classical behavior.
+// There is a small rounding error (~1%) due to integer division (>>15 vs /32385).
 func NewQuantumTile(t TernaryTile) QuantumTile {
 	return QuantumTile{
 		Weights:   t,
@@ -111,8 +113,9 @@ func NewQuantumTernaryLayer(base *TernaryLayer) *QuantumTernaryLayer {
 // The result: tiles with high amplitude and aligned phase → amplified (constructive).
 // Tiles with low amplitude or misaligned phase → suppressed (destructive).
 //
-// When all amplitudes=255 and all phases=0, this produces identical results
-// to the classical forward pass.
+// NOTE: When all amplitudes=255 and all phases=0, this produces APPROXIMATELY
+// classical results. The integer division (>>15 ≈ /32768 vs exact /32385)
+// introduces ~1% rounding error. Use ForwardClassical() for exact classical path.
 func (q *QuantumTernaryLayer) ForwardQuantum(activeMask []uint16, inputPhase uint8) []int16 {
 	base := q.Base
 	output := make([]int16, base.OutputSize)
@@ -241,8 +244,9 @@ func NewPBitLayer(size int, rng *rand.Rand) *PBitLayer {
 //
 //	raw_activation = bias + input[i]
 //	if temperature == 0: output = sign(raw_activation)
-//	else: probability = sigmoid(raw_activation / temperature)
-//	      output = bernoulli_sample(probability)
+//	else:
+//	  step 1: Bernoulli(sigmoid(|raw| / temperature)) → active or not
+//	  step 2: if active, sign = sign(raw)
 //
 // Returns activations as int16 values (-1, 0, or +1).
 func (p *PBitLayer) Activate(input []int16) []int16 {
@@ -270,22 +274,27 @@ func (p *PBitLayer) Activate(input []int16) []int16 {
 			continue
 		}
 
-		// Probabilistic: sigmoid with temperature scaling
-		// P(activate) = 1 / (1 + exp(-raw / temperature))
-		// Using integer-approximated sigmoid
-		scaled := raw * 256 / (int32(neuron.Temperature) + 1)
-
-		// Fast sigmoid approximation: clamp to [-8, 8] range then linear
+		// Probabilistic: two-step clean Bernoulli.
+		// Step 1: compute activation probability from |raw| / temperature.
+		// Higher |raw| → more likely to fire. Higher temperature → more noise.
+		absRaw := raw
+		if absRaw < 0 {
+			absRaw = -absRaw
+		}
+		scaled := absRaw * 256 / (int32(neuron.Temperature) + 1)
 		prob := fastSigmoid256(int16(clamp32(scaled, -2048, 2047)))
 
-		// Bernoulli sample
+		// Step 2: Bernoulli sample — fire or not
 		sample := uint8(p.rng.Intn(256))
 		if sample < prob {
-			output[i] = 1
-		} else if sample > 255-prob {
-			output[i] = -1
+			// Fires. Sign determined by raw activation direction.
+			if raw >= 0 {
+				output[i] = 1
+			} else {
+				output[i] = -1
+			}
 		}
-		// else: output[i] = 0 (quantum "undecided" state)
+		// else: output[i] = 0 (did not fire — "undecided")
 	}
 
 	return output
@@ -302,49 +311,63 @@ func (p *PBitLayer) SetTemperature(temp uint8) {
 // QuantumRouter — Phase-based Expert Routing with Interference
 // ─────────────────────────────────────────────────────────────────────
 
-// QuantumRouter extends ExpertRouter with phase-based interference scoring.
+// QuantumRouter extends ExpertRouter with SDR similarity + phase interference.
+// Score = semantic_similarity + phase_bonus + amplitude_confidence - usage_penalty
 type QuantumRouter struct {
-	ExpertPhases []uint8  // phase vector per expert (compact)
-	ExpertAmps   []uint8  // amplitude/confidence per expert
-	TopK         int
-	UsageCounts  []uint64
-	SDRSize      int
+	ExpertPhases     []uint8  // phase per expert
+	ExpertAmps       []uint8  // amplitude/confidence per expert
+	ExpertEmbeddings []SDR    // SDR embedding per expert (semantic)
+	TopK             int
+	UsageCounts      []uint64 // accessed atomically
+	SDRSize          int
 }
 
-// NewQuantumRouter creates a quantum-inspired router.
+// NewQuantumRouter creates a quantum-inspired router with SDR embeddings.
 func NewQuantumRouter(numExperts, sdrSize, topK int) *QuantumRouter {
 	phases := make([]uint8, numExperts)
 	amps := make([]uint8, numExperts)
+	embeddings := make([]SDR, numExperts)
 	for i := range amps {
 		amps[i] = 128 // initial neutral amplitude
+		embeddings[i] = NewSDR(sdrSize)
 	}
 	return &QuantumRouter{
-		ExpertPhases: phases,
-		ExpertAmps:   amps,
-		TopK:         topK,
-		UsageCounts:  make([]uint64, numExperts),
-		SDRSize:      sdrSize,
+		ExpertPhases:     phases,
+		ExpertAmps:       amps,
+		ExpertEmbeddings: embeddings,
+		TopK:             topK,
+		UsageCounts:      make([]uint64, numExperts),
+		SDRSize:          sdrSize,
 	}
 }
 
-// Route selects top-K experts using interference-based scoring.
+// RouteSDR selects top-K experts using BOTH SDR similarity AND phase interference.
 //
-// Score = amplitude × cos(expert_phase - input_phase)
+// Score = semantic_similarity(input, expert_embedding) * 256
+//       + amplitude * cos(phase_diff) / 128   (phase bonus, smaller weight)
 //
-//   Experts "in phase" → constructive interference → high score → selected
-//   Experts "out of phase" → destructive interference → low score → skipped
-func (r *QuantumRouter) Route(inputPhase uint8) []int {
+// This ensures experts are relevant SEMANTICALLY first, with phase as a tiebreaker.
+func (r *QuantumRouter) RouteSDR(input SDR) []int {
 	type scored struct {
 		idx   int
 		score int32
 	}
 
+	inputPhase := SDRPhase(input)
+
 	scores := make([]scored, len(r.ExpertPhases))
 	for i := range r.ExpertPhases {
+		// Primary: semantic SDR similarity (0-255 scaled to 0-65280)
+		var semanticScore int32
+		if r.ExpertEmbeddings[i].ActiveCount > 0 {
+			semanticScore = int32(input.Similarity(r.ExpertEmbeddings[i])) * 256
+		}
+
+		// Secondary: phase interference bonus (-127 to +127 scaled by amplitude)
 		phaseDiff := r.ExpertPhases[i] - inputPhase
-		cosFactor := int32(cos256[phaseDiff]) // -127 to +127
-		amp := int32(r.ExpertAmps[i])
-		scores[i] = scored{i, amp * cosFactor} // range: -32385 to +32385
+		phaseBonus := int32(r.ExpertAmps[i]) * int32(cos256[phaseDiff]) / 128
+
+		scores[i] = scored{i, semanticScore + phaseBonus}
 	}
 
 	// Select top-K by score
@@ -357,7 +380,6 @@ func (r *QuantumRouter) Route(inputPhase uint8) []int {
 	for _, s := range scores {
 		if len(topK) < k {
 			topK = append(topK, s)
-			// Insertion sort
 			for j := len(topK) - 1; j > 0; j-- {
 				if topK[j].score > topK[j-1].score {
 					topK[j], topK[j-1] = topK[j-1], topK[j]
@@ -376,7 +398,54 @@ func (r *QuantumRouter) Route(inputPhase uint8) []int {
 	result := make([]int, len(topK))
 	for i, s := range topK {
 		result[i] = s.idx
-		r.UsageCounts[s.idx]++
+		atomic.AddUint64(&r.UsageCounts[s.idx], 1)
+	}
+	return result
+}
+
+// Route selects top-K using phase-only scoring (simple path, no SDR needed).
+func (r *QuantumRouter) Route(inputPhase uint8) []int {
+	type scored struct {
+		idx   int
+		score int32
+	}
+
+	scores := make([]scored, len(r.ExpertPhases))
+	for i := range r.ExpertPhases {
+		phaseDiff := r.ExpertPhases[i] - inputPhase
+		cosFactor := int32(cos256[phaseDiff])
+		amp := int32(r.ExpertAmps[i])
+		scores[i] = scored{i, amp * cosFactor}
+	}
+
+	k := r.TopK
+	if k > len(scores) {
+		k = len(scores)
+	}
+
+	topK := make([]scored, 0, k)
+	for _, s := range scores {
+		if len(topK) < k {
+			topK = append(topK, s)
+			for j := len(topK) - 1; j > 0; j-- {
+				if topK[j].score > topK[j-1].score {
+					topK[j], topK[j-1] = topK[j-1], topK[j]
+				}
+			}
+		} else if s.score > topK[k-1].score {
+			topK[k-1] = s
+			for j := k - 1; j > 0; j-- {
+				if topK[j].score > topK[j-1].score {
+					topK[j], topK[j-1] = topK[j-1], topK[j]
+				}
+			}
+		}
+	}
+
+	result := make([]int, len(topK))
+	for i, s := range topK {
+		result[i] = s.idx
+		atomic.AddUint64(&r.UsageCounts[s.idx], 1)
 	}
 	return result
 }
@@ -417,15 +486,16 @@ func (r *QuantumRouter) UpdateExpertPhase(expertIdx int, inputPhase uint8, rewar
 // MultiSampleResult holds the result of multi-sample inference.
 type MultiSampleResult struct {
 	Output     SDR     // majority-voted output
-	Confidence float32 // agreement ratio (0.0 = chaotic, 1.0 = deterministic)
+	Confidence float32 // Jaccard agreement on active bits (0.0 = chaotic, 1.0 = all agree)
 	NumSamples int     // how many samples were taken
 }
 
 // MultiSampleForward runs multiple forward passes with phase perturbations
 // and returns the majority-voted result with a confidence score.
 //
-// This simulates quantum superposition: each "measurement" (forward pass)
-// may produce a different result, and we combine them probabilistically.
+// Confidence is computed as Jaccard agreement over the UNION of all bits
+// that were active in ANY sample. This avoids the bias where sparse SDRs
+// get artificially high confidence from millions of always-inactive bits.
 //
 // Higher confidence = system is "certain" → classical-like
 // Lower confidence = system is "uncertain" → needs more information
@@ -445,22 +515,18 @@ func MultiSampleForward(
 
 	dim := layer.Base.OutputSize
 	voteCounts := make([]int, dim)
-	totalActive := 0
 
 	for s := 0; s < numSamples; s++ {
-		// Perturb phase for each sample (except first = deterministic)
 		phase := basePhase
 		if s > 0 {
-			phase = basePhase + uint8(rng.Intn(64)-32) // ±32 phase noise
+			phase = basePhase + uint8(rng.Intn(64)-32)
 		}
 
 		output := layer.ForwardQuantum(activeMask, phase)
 
-		// Convert to binary votes (positive = active)
 		for j, val := range output {
 			if val > 0 {
 				voteCounts[j]++
-				totalActive++
 			}
 		}
 	}
@@ -468,19 +534,32 @@ func MultiSampleForward(
 	// Majority vote
 	threshold := numSamples / 2
 	result := NewSDR(dim)
-	agreements := 0
+
+	// Confidence: Jaccard over union of active bits.
+	// Only count positions that were active in at least ONE sample.
+	unionActive := 0  // bits active in any sample
+	agreedActive := 0 // bits where all samples agreed (all active or all inactive WITHIN union)
 
 	for j, count := range voteCounts {
 		if count > threshold {
 			result.Set(j)
 		}
-		// Count strong agreement (either all yes or all no)
-		if count == numSamples || count == 0 {
-			agreements++
+		// Only consider bits that appeared in at least one sample
+		if count > 0 {
+			unionActive++
+			// Perfect agreement = active in ALL samples
+			if count == numSamples {
+				agreedActive++
+			}
 		}
 	}
 
-	confidence := float32(agreements) / float32(dim)
+	var confidence float32
+	if unionActive > 0 {
+		confidence = float32(agreedActive) / float32(unionActive)
+	} else {
+		confidence = 0 // no activity at all = zero confidence
+	}
 
 	return MultiSampleResult{
 		Output:     result,
@@ -494,15 +573,24 @@ func MultiSampleForward(
 // ─────────────────────────────────────────────────────────────────────
 
 // SDRPhase extracts a phase angle from an SDR based on its active bit pattern.
-// This creates a "fingerprint phase" that can be compared with expert phases.
+// Uses a weighted combination of active bit positions for a richer phase signal
+// than a simple hash truncation. Still 256 possible phases, but more spread.
 func SDRPhase(sdr SDR) uint8 {
 	if sdr.ActiveCount == 0 {
 		return 0
 	}
 
-	// Use hash of active bits to derive a phase
+	// Combine hash (global pattern) with weighted position sum (local structure).
+	// This gives different SDRs with similar hashes distinguishable phases.
 	h := sdr.Hash()
-	return uint8(h & 0xFF)
+
+	var posSum uint64
+	for _, idx := range sdr.ActiveIndices() {
+		posSum += uint64(idx) * 7919 // prime multiplier for spread
+	}
+
+	combined := h ^ posSum
+	return uint8(combined & 0xFF)
 }
 
 // ─────────────────────────────────────────────────────────────────────
