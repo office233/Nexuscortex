@@ -19,14 +19,20 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 'stable'
           cache: true
-
-      - name: Go test
-        run: go test -count=1 ./...
 
       - name: Go vet
         run: go vet ./...
 
-      - name: Build Go commands
+      - name: Go test (race detector)
+        run: go test -race -count=1 -timeout 300s ./...
+
+      - name: Build all commands
         run: go build ./cmd/...
+
+      - name: Vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
