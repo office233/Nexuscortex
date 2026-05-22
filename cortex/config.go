@@ -220,7 +220,7 @@ func DefaultConfig() Config {
 		MaxMemories:             10000,
 		ThinkCycles:             10,
 		CerebellumConfThreshold: 178,
-		HippocampusRecallThresh: 50,
+		HippocampusRecallThresh: 180,
 		PrefrontalConfThreshold: 128,
 		BrainPruneMaxAge:        200,
 		CerebellumMinUseCount:   2,

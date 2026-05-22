@@ -159,22 +159,36 @@ func (e *Encoder) EncodeText(text string) []SDR {
 }
 
 // EncodeSentence creates a single combined SDR for an entire sentence.
-// The result is the deterministic union of all word SDRs.
-// No noise is added — the same input must always produce the same SDR
-// for Cerebellum caching and Hippocampus recall to work correctly.
+// It uses a positional encoding strategy where each word's active bits
+// are shifted by its position in the sentence. This solves the "bag of words"
+// false-overlap problem, ensuring "Capitala Frantei" and "Capitala Romaniei"
+// have distinct signatures while still allowing partial overlap.
 func (e *Encoder) EncodeSentence(text string) SDR {
 	tokens := Tokenize(text)
 	if len(tokens) == 0 {
 		return NewSDR(e.sdrSize)
 	}
 
-	// Start with the first word's SDR.
-	combined := e.EncodeWord(tokens[0])
+	combined := NewSDR(e.sdrSize)
 
-	// Union in all subsequent word SDRs.
-	for i := 1; i < len(tokens); i++ {
-		wordSDR := e.EncodeWord(tokens[i])
-		combined = combined.Union(wordSDR)
+	// Shift amount per token position (e.g., 10000 / 50 = 200 positions)
+	shiftAmount := e.sdrSize / 50
+	if shiftAmount == 0 {
+		shiftAmount = 1
+	}
+
+	// Union in all word SDRs, shifted by their position index.
+	for i, token := range tokens {
+		wordSDR := e.EncodeWord(token)
+		shift := (i * shiftAmount) % e.sdrSize
+		
+		for _, idx := range wordSDR.ActiveIndices() {
+			shiftedIdx := (idx + shift) % e.sdrSize
+			if !combined.IsActive(shiftedIdx) {
+				combined.Set(shiftedIdx)
+				combined.ActiveCount++
+			}
+		}
 	}
 
 	return combined

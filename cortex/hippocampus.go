@@ -79,18 +79,30 @@ var hippoStopWords = map[string]bool{
 	"into": true, "over": true, "after": true, "before": true,
 	"between": true, "under": true, "through": true, "during": true,
 	"keeps": true, "keep": true, "kept": true,
+
+	// Romanian Stop-Words
+	"care": true, "este": true, "e": true, "ce": true, "cine": true,
+	"la": true, "de": true, "un": true, "o": true,
+	"si": true, "sau": true, "cu": true, "din": true, "pe": true,
+	"ale": true, "ai": true, "al": true, "sunt": true,
+	"era": true, "fi": true, "fost": true, "pentru": true, "ca": true,
+	"sa": true, "cum": true, "unde": true, "cand": true, "dece": true,
+	"prin": true, "despre": true, "intre": true, "sub": true, "peste": true,
+	"dupa": true, "inainte": true,
 }
 
-// stemSuffixes lists English suffixes to strip, ordered longest-first
-// so we greedily remove the longest applicable suffix.
+// stemSuffixes lists suffixes to strip, ordered longest-first
+// so we greedily remove the longest applicable suffix. Supports both
+// English and Romanian inflections.
 var stemSuffixes = []string{
 	"isation", "ization",
 	"ation", "tion", "sion",
-	"ment", "ness", "able", "ible", "ment",
+	"ment", "ness", "able", "ible",
 	"ical", "ious", "eous", "ance", "ence",
+	"ului", "elor", "ilor",
 	"ful", "ous", "ive", "ing", "ity",
-	"est", "ism",
-	"ly", "ed", "er", "es", "al",
+	"est", "ism", "lor", "ele",
+	"ly", "ed", "er", "es", "al", "le", "ei", "ui", "ii", "ea", "a",
 }
 
 // stemWord applies basic suffix-stripping to normalise word forms.

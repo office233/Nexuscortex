@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Knetic/govaluate"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -74,43 +76,39 @@ func (r *ReasoningEngine) TryReason(input string) (string, bool) {
 // Arithmetic — Direct math expression detection
 // ─────────────────────────────────────────────────────────────────────
 
-// reDirectMath matches patterns like "what is 15 + 27" or "15 plus 27".
-var reDirectMath = regexp.MustCompile(
-	`(\d+(?:\.\d+)?)\s*` +
-		`(\+|-|\*|/|×|÷|plus|minus|times|divided\s+by|multiplied\s+by)` +
-		`\s*(\d+(?:\.\d+)?)`)
+// reDirectMath matches patterns like "5+2+8*9" or "what is 15 + 27"
+var reDirectMath = regexp.MustCompile(`([\d\.]+(?:\s*[\+\-\*\/]\s*[\d\.]+)+)`)
 
 func (r *ReasoningEngine) tryArithmetic(input string) (string, bool) {
-	m := reDirectMath.FindStringSubmatch(input)
-	if m == nil {
+	// Clean text from common words first to help extraction
+	input = strings.ReplaceAll(input, "what is", "")
+	input = strings.ReplaceAll(input, "calculate", "")
+	input = strings.ReplaceAll(input, "?", "")
+	input = strings.ReplaceAll(input, "plus", "+")
+	input = strings.ReplaceAll(input, "minus", "-")
+	input = strings.ReplaceAll(input, "times", "*")
+	input = strings.ReplaceAll(input, "divided by", "/")
+
+	m := reDirectMath.FindString(input)
+	if m == "" {
 		return "", false
 	}
 
-	a, err1 := strconv.ParseFloat(m[1], 64)
-	b, err2 := strconv.ParseFloat(m[3], 64)
-	if err1 != nil || err2 != nil {
+	expr, err := govaluate.NewEvaluableExpression(m)
+	if err != nil {
 		return "", false
 	}
 
-	op := strings.TrimSpace(m[2])
-	var result float64
-	switch {
-	case op == "+", op == "plus":
-		result = a + b
-	case op == "-", op == "minus":
-		result = a - b
-	case op == "*", op == "×", op == "times", strings.HasPrefix(op, "multiplied"):
-		result = a * b
-	case op == "/", op == "÷", strings.HasPrefix(op, "divided"):
-		if b == 0 {
-			return "", false
-		}
-		result = a / b
-	default:
+	result, err := expr.Evaluate(nil)
+	if err != nil {
 		return "", false
 	}
 
-	return formatNumber(result), true
+	if val, ok := result.(float64); ok {
+		return formatNumber(val), true
+	}
+
+	return "", false
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -447,7 +445,6 @@ func naiveStem(word string) string {
 	}
 	return word
 }
-
 
 // formatNumber formats a float64 as a clean string:
 // integers are displayed without decimal points, floats keep their precision.

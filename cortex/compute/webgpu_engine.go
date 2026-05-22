@@ -1,4 +1,8 @@
+//go:build webgpu
+// +build webgpu
+
 package compute
+
 
 import (
 	"fmt"

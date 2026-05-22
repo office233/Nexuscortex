@@ -305,3 +305,67 @@ func (b *Broca) GenerateFromContext(context []string, maxWords int) string {
 	prompt := strings.Join(context, " ")
 	return b.Brain.Generate(prompt, maxWords)
 }
+
+// GenerateAutoregressive generates text by feeding tokens sequentially into the
+// stateful FractalCortex, predicting the next token, and appending it to the context.
+// This forms a true language model P(w_t | w_1...w_{t-1}) loop.
+func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string, maxTokens int) string {
+	if fc == nil || len(contextWords) == 0 || maxTokens <= 0 {
+		return ""
+	}
+
+	// Reset cortex state for a clean generation pass
+	if len(fc.Blocks) > 0 {
+		for _, block := range fc.Blocks {
+			block.Reset()
+		}
+	}
+
+	var currentState SDR
+	// 1. Feed the initial context into the cortex to build up the temporal state
+	for _, word := range contextWords {
+		wordSDR := b.Encoder.EncodeWord(word)
+		currentState = fc.ProcessToken(wordSDR)
+	}
+
+	// 2. Autoregressive loop
+	var generated []string
+	for i := 0; i < maxTokens; i++ {
+		// Decode the current state (which predicts the next token)
+		pattern := make([]bool, currentState.Size)
+		for _, idx := range currentState.ActiveIndices() {
+			if idx < currentState.Size {
+				pattern[idx] = true
+			}
+		}
+		topK := b.Decoder.DecodeTopK(pattern, currentState.Size, 3)
+		if len(topK) == 0 {
+			break
+		}
+		
+		// Pick the most likely word that is not <UNK>
+		var nextWord string
+		for _, cand := range topK {
+			if cand.Word != "<UNK>" {
+				nextWord = cand.Word
+				break
+			}
+		}
+		if nextWord == "" {
+			break
+		}
+
+		generated = append(generated, nextWord)
+		
+		// Stop condition: end of sentence
+		if isPunctuation(nextWord) {
+			break
+		}
+
+		// Feed the generated word back into the cortex to update state for the next prediction
+		nextWordSDR := b.Encoder.EncodeWord(nextWord)
+		currentState = fc.ProcessToken(nextWordSDR)
+	}
+
+	return b.Brain.formatOutput(generated)
+}

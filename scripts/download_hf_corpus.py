@@ -22,12 +22,16 @@ import argparse
 import json
 import os
 import sys
+
+# Ensure stdout supports emojis on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 import re
 import time
 from pathlib import Path
 
 # Target directory for corpus files
-CORPUS_DIR = Path(r"D:\Nexus cortex\data\corpus")
+CORPUS_DIR = Path(__file__).resolve().parent.parent / "data" / "corpus"
 
 def clean_text(text: str) -> str:
     """Clean text for cortex training — remove wiki markup, extra whitespace."""

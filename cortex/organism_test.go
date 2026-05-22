@@ -30,8 +30,8 @@ func TestOrganismNoEchoRegression(t *testing.T) {
 	}
 
 	// Since there is no learned data, the response should fall back to the structured low-confidence policy:
-	// "(no confident response)"
-	expected := "(no confident response)"
+	// "?"
+	expected := "?"
 	if response != expected {
 		t.Errorf("expected low-confidence fallback %q for empty brain, got: %q", expected, response)
 	}
@@ -149,8 +149,11 @@ func TestOrganismLearnQARetrievesEpisodicAnswerWithoutQAMemory(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 	cfg := DefaultConfig()
 	cfg.DataDir = tempDir
+	cfg.MaxGenWords = 0 // Disable Broca generation to test pure fallback
+	cfg.HippocampusRecallThresh = 50 // Lower threshold since test questions are short
 
 	org := NewOrganism(cfg, rng)
+	org.FractalCortex = nil // Disable AGI generation to test pure associative recall
 	org.LearnQA("who loves gamma?", "gamma loves delta.")
 	org.LearnQA("where is alpha?", "alpha is stored in beta.")
 
@@ -205,6 +208,7 @@ func TestOrganismSuppressesLowConfidenceUnknownResponse(t *testing.T) {
 	cfg.DataDir = tempDir
 
 	org := NewOrganism(cfg, rng)
+	org.FractalCortex = nil // Disable AGI generation to test pure associative recall
 	org.Learn("the hippocampus stores episodic memories")
 
 	response := org.Process("who invented the imaginary tensor loom?")

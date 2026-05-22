@@ -327,6 +327,10 @@ func activationsToSDR(activations []int16, topN int) SDR {
 	size := len(activations)
 	sdr := NewSDR(size)
 
+	if topN <= 0 {
+		return sdr
+	}
+
 	if topN > size {
 		topN = size
 	}

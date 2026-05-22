@@ -318,13 +318,26 @@ func (o *Organism) Process(input string) string {
 	// avoid false positives from single-stem coincidences.
 	if !memoryUsed || memorySimilarity < o.Config.PrefrontalConfThreshold {
 		inputTokens := Tokenize(input)
+		// Calculate keyword threshold dynamically to prevent single-word false matches
+		kwCount := 0
+		for _, t := range inputTokens {
+			t = strings.ToLower(t)
+			if !hippoStopWords[t] && t != "" {
+				kwCount++
+			}
+		}
+		threshold := 1
+		if kwCount >= 2 {
+			threshold = 2
+		}
+
 		// Try expanded recall first (uses Brain associations for synonym expansion).
-		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywordsExpanded(inputTokens, 2, combinedSDR, o.Brain); kwOK && kwScore > memorySimilarity {
+		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywordsExpanded(inputTokens, threshold, combinedSDR, o.Brain); kwOK && kwScore > memorySimilarity {
 			responseSDR = kwMem.Output
 			memoryUsed = true
 			memorySimilarity = kwScore
 			memoryText = extractAnswerFromContext(kwMem.Context)
-		} else if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, 2, combinedSDR); kwOK && kwScore > memorySimilarity {
+		} else if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, threshold, combinedSDR); kwOK && kwScore > memorySimilarity {
 			// Fall back to non-expanded keyword recall.
 			responseSDR = kwMem.Output
 			memoryUsed = true
@@ -376,10 +389,28 @@ func (o *Organism) Process(input string) string {
 	}
 
 	// ── 5. SPEAK (Broca) ─────────────────────────────────────────
-	responseText = o.Broca.Generate(responseSDR, o.Config.MaxGenWords)
+	// Generate a response autoregressively token-by-token (True Language Model).
+	// If Hippocampus retrieved a memory, inject it as context (RAG behavior).
+	if o.FractalCortex != nil && len(understanding.Words) > 0 {
+		contextWords := make([]string, 0, len(understanding.Words)+10)
+		if memoryUsed && memoryText != "" {
+			// RAG context injection
+			contextWords = append(contextWords, Tokenize(memoryText)...)
+			contextWords = append(contextWords, "|")
+		}
+		contextWords = append(contextWords, understanding.Words...)
+		
+		responseText = o.Broca.GenerateAutoregressive(o.FractalCortex, contextWords, o.Config.MaxGenWords)
+		if responseText != "" {
+			confidence = 255 // Generated text implies successful AGI processing
+		}
+	}
 
-	// If Broca couldn't decode the SDR, fall back to context-based
-	// generation using the keywords or input words.
+	// Fallback to associative / SDR generation if autoregression didn't work or wasn't used
+	if responseText == "" {
+		responseText = o.Broca.Generate(responseSDR, o.Config.MaxGenWords)
+	}
+
 	if responseText == "" && len(understanding.KeyWords) > 0 {
 		responseText = o.Broca.GenerateFromContext(understanding.KeyWords, o.Config.MaxGenWords)
 	}
@@ -387,7 +418,7 @@ func (o *Organism) Process(input string) string {
 		responseText = o.Broca.GenerateFromContext(understanding.Words, o.Config.MaxGenWords)
 	}
 
-	if memoryUsed && memoryText != "" && !sameText(memoryText, input) {
+	if responseText == "" && memoryUsed && memoryText != "" && !sameText(memoryText, input) {
 		responseText = memoryText
 	}
 
@@ -543,6 +574,22 @@ func (o *Organism) LearnQA(question, answer string) {
 	// Store "Q | A" as context so the keyword index covers both.
 	context := question + " | " + answer
 	o.Hippocampus.Store(questionSDR, answerSDR, context)
+
+	// AGI Autoregressive Training (STDP)
+	if o.FractalCortex != nil {
+		// Encode the full sequence (Q | A) token by token to create a sequence array
+		// We add "|" as a separator token so the cortex learns to transition from Q to A
+		seqTokens := append(Tokenize(question), "|")
+		seqTokens = append(seqTokens, Tokenize(answer)...)
+		
+		seqSDRs := make([]SDR, 0, len(seqTokens))
+		for _, tok := range seqTokens {
+			seqSDRs = append(seqSDRs, o.Encoder.EncodeWord(tok))
+		}
+		
+		// Train the cortex using Probabilistic STDP with a moderate learning rate (e.g., 20/255 = ~8% probability)
+		o.FractalCortex.TrainSequence(seqSDRs, 20)
+	}
 }
 
 func sameText(a, b string) bool {
@@ -890,6 +937,13 @@ func (o *Organism) Save(dataDir string) error {
 		return fmt.Errorf("organism save reward: %w", err)
 	}
 
+	// 12. FractalCortex weights.
+	if o.FractalCortex != nil {
+		if err := o.FractalCortex.Save(dataDir); err != nil {
+			return fmt.Errorf("organism save fractal cortex: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1018,6 +1072,24 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		reward = NewRewardSystem(cfg)
 	}
 
+	// Try hardware acceleration
+	var engine interface{}
+	gpu := compute.NewWebGPUEngine()
+	if err := gpu.Init(); err == nil {
+		fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
+		engine = gpu
+	} else {
+		fmt.Printf("[GPU Compute] Fallback to CPU Engine (WebGPU failed: %v)\n", err)
+		engine = compute.NewCPUEngine()
+	}
+
+	fractalCortex := NewFractalCortex(cfg, engine)
+	if err := fractalCortex.Load(cfg.DataDir); err != nil {
+		fmt.Printf("[FractalCortex] No saved weights found or load failed (%v), starting fresh.\n", err)
+	} else {
+		fmt.Println("[FractalCortex] Successfully restored BitNet weights from disk.")
+	}
+
 	o := &Organism{
 		Config:  cfg,
 		Vocab:   vocab,
@@ -1045,6 +1117,9 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		Analogy:           NewAnalogyEngine(cfg, brain, encoder),
 		SleepConsolidator: NewSleepConsolidator(cfg),
 		Reasoning:         NewReasoningEngine(),
+
+		// FractalCortex: Infinite growing MoC ALBERT layers
+		FractalCortex: fractalCortex,
 
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),
