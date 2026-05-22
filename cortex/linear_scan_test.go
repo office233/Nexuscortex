@@ -194,7 +194,7 @@ func TestCortexStackScaling(t *testing.T) {
 }
 
 func TestSharedCortexStack(t *testing.T) {
-	shared := NewSharedCortexStack(24, 256, 50, 3, 64)
+	shared := NewSharedCortexStack(24, 256, 50, 3, 64, nil)
 
 	input := NewSDR(256)
 	for i := 0; i < 10; i++ {
@@ -232,7 +232,7 @@ func TestSharedVsNonSharedComparison(t *testing.T) {
 
 	for _, cfg := range configs {
 		regular := NewCortexStack(cfg.layers, cfg.dim, 100, 3, 64)
-		shared := NewSharedCortexStack(cfg.layers, cfg.dim, 100, 3, 64)
+		shared := NewSharedCortexStack(cfg.layers, cfg.dim, 100, 3, 64, nil)
 
 		regMem := float64(regular.TotalMemoryBytes()) / (1024 * 1024)
 		sharedMem := float64(shared.StoredMemoryBytes()) / (1024 * 1024)

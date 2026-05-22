@@ -684,15 +684,20 @@ type SharedCortexStack struct {
 // NewSharedCortexStack creates an ALBERT-style shared stack.
 // Only ONE set of ternary weights is allocated; all N layers share them.
 // This gives N× parameter efficiency.
-func NewSharedCortexStack(numLayers, dim, contextLen, topK int, decayRate uint8) *SharedCortexStack {
+func NewSharedCortexStack(numLayers, dim, contextLen, topK int, decayRate uint8, engine interface{}) *SharedCortexStack {
 	// ONE set of shared weights
 	sharedFeature := NewTernaryLayer(dim, dim)
+	sharedFeature.Engine = engine
 	sharedOutput := NewTernaryLayer(dim, dim)
+	sharedOutput.Engine = engine
 
 	// ONE set of shared scan projection weights
 	sharedGate := NewTernaryLayer(dim, dim)
+	sharedGate.Engine = engine
 	sharedInputProj := NewTernaryLayer(dim, dim)
+	sharedInputProj.Engine = engine
 	sharedOutputProj := NewTernaryLayer(dim, dim)
+	sharedOutputProj.Engine = engine
 
 	// Each layer gets independent attention cache and scan STATE
 	// but shares the ternary weights

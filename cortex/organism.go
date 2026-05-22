@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"nexus-cortex/cortex/compute"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,17 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 
 	prefrontal := NewPrefrontal(cfg, rng)
 
+	// Try hardware acceleration
+	var engine interface{}
+	gpu := compute.NewWebGPUEngine()
+	if err := gpu.Init(); err == nil {
+		fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
+		engine = gpu
+	} else {
+		fmt.Printf("[GPU Compute] Fallback to CPU Engine (WebGPU failed: %v)\n", err)
+		engine = compute.NewCPUEngine()
+	}
+
 	return &Organism{
 		Config:  cfg,
 		Vocab:   vocab,
@@ -141,7 +153,7 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		Reasoning:         NewReasoningEngine(),
 
 		// CortexStack: 24 ALBERT layers, dim=SDRSize, 50 context, top-3 attention, decay=64
-		CortexStack: NewSharedCortexStack(24, cfg.SDRSize, 50, 3, 64),
+		CortexStack: NewSharedCortexStack(24, cfg.SDRSize, 50, 3, 64, engine),
 
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),

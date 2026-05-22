@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
+	"unsafe"
 )
 
 // TernaryTile holds 16 ternary weights packed into a single RGBA32 pixel.
@@ -129,15 +130,20 @@ func TernaryTileFromRGBA32(b [4]byte) TernaryTile {
 // ternary {-1, 0, +1} packed into RGBA32 tiles.
 //
 // For a layer with inputSize=1024 and outputSize=512:
-//   Each output neuron needs 1024 weights = 64 tiles (16 weights per tile)
-//   Total tiles: 512 * 64 = 32,768 tiles = 128 KB
-//   Equivalent float32 layer: 1024 * 512 * 4 = 2 MB (16x more memory!)
+//
+//	Each output neuron needs 1024 weights = 64 tiles (16 weights per tile)
+//	Total tiles: 512 * 64 = 32,768 tiles = 128 KB
+//	Equivalent float32 layer: 1024 * 512 * 4 = 2 MB (16x more memory!)
 type TernaryLayer struct {
-	InputSize  int
-	OutputSize int
+	InputSize   int
+	OutputSize  int
 	TilesPerRow int           // = ceil(InputSize / 16)
-	Tiles      []TernaryTile  // [OutputSize * TilesPerRow] tiles
-	Bias       []int16        // [OutputSize] bias per output neuron (optional)
+	Tiles       []TernaryTile // [OutputSize * TilesPerRow] tiles
+	Bias        []int16       // [OutputSize] bias per output neuron (optional)
+
+	// Engine is an optional hardware accelerator (e.g., GPU/WebGPU).
+	// If set, ForwardSparse is offloaded to the engine.
+	Engine interface{} `json:"-"`
 }
 
 // NewTernaryLayer creates a new ternary layer with zero-initialized weights.
@@ -174,17 +180,19 @@ func (l *TernaryLayer) GetWeight(outputIdx, inputIdx int) int8 {
 // ZERO multiplication. This is the core of the RGBA32 ternary engine.
 //
 // For each output neuron j:
-//   output[j] = bias[j] + Σ(input[i] * weight[j][i])
-//   But since weight ∈ {-1, 0, +1}:
-//     weight = +1: output[j] += input[i]
-//     weight = -1: output[j] -= input[i]
-//     weight =  0: skip (free sparsity!)
+//
+//	output[j] = bias[j] + Σ(input[i] * weight[j][i])
+//	But since weight ∈ {-1, 0, +1}:
+//	  weight = +1: output[j] += input[i]
+//	  weight = -1: output[j] -= input[i]
+//	  weight =  0: skip (free sparsity!)
 //
 // The computation uses bit manipulation:
-//   positive_mask = mask AND NOT sign  (bits where weight = +1)
-//   negative_mask = mask AND sign      (bits where weight = -1)
-//   For each active positive bit: output += input
-//   For each active negative bit: output -= input
+//
+//	positive_mask = mask AND NOT sign  (bits where weight = +1)
+//	negative_mask = mask AND sign      (bits where weight = -1)
+//	For each active positive bit: output += input
+//	For each active negative bit: output -= input
 func (l *TernaryLayer) Forward(input []int16) []int16 {
 	output := make([]int16, l.OutputSize)
 	copy(output, l.Bias)
@@ -207,12 +215,12 @@ func (l *TernaryLayer) Forward(input []int16) []int16 {
 			baseIdx := t * 16
 			// Process positive weights (ADD)
 			for posLo != 0 {
-				bit := posLo & (-posLo)         // isolate lowest set bit
+				bit := posLo & (-posLo) // isolate lowest set bit
 				idx := baseIdx + bits.TrailingZeros8(bit)
 				if idx < l.InputSize {
 					acc += int32(input[idx])
 				}
-				posLo ^= bit                     // clear lowest set bit
+				posLo ^= bit // clear lowest set bit
 			}
 			// Process negative weights (SUB)
 			for negLo != 0 {
@@ -262,6 +270,30 @@ func (l *TernaryLayer) Forward(input []int16) []int16 {
 // Only processes input positions that are non-zero — much faster when
 // input sparsity is high (e.g., SDR with 0.5% active bits).
 func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) []int16 {
+	if l.Engine != nil {
+		// Delegate to hardware engine
+		if eng, ok := l.Engine.(interface {
+			ForwardSparse([]uint32, []int16, []uint32, []int16, int, int) []int16
+		}); ok {
+			// Convert activeIndices to uint32
+			indices32 := make([]uint32, len(activeIndices))
+			for i, v := range activeIndices {
+				indices32[i] = uint32(v)
+			}
+			// Cast Tiles to []uint32
+			// This avoids an allocation if we use unsafe, but for safety we copy for now,
+			// or we can just redefine Tiles as []uint32 in TernaryLayer?
+			// Since TernaryTile is uint32, we can cast the slice.
+			// However, in Go casting a slice requires unsafe. We'll just do a copy for now,
+			// or we can use unsafe in a tiny helper. Let's do a safe copy here for simplicity,
+			// though in production we should pass unsafe pointer or redefine.
+
+			// Fast zero-copy cast using unsafe
+			tiles32 := unsafe.Slice((*uint32)(unsafe.Pointer(&l.Tiles[0])), len(l.Tiles))
+			return eng.ForwardSparse(indices32, activeValues, tiles32, l.Bias, l.TilesPerRow, l.OutputSize)
+		}
+	}
+
 	output := make([]int16, l.OutputSize)
 	copy(output, l.Bias)
 
