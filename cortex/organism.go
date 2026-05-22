@@ -68,6 +68,7 @@ type Organism struct {
 	ErrorLearner      *ErrorDrivenLearner // Error-driven synapse adjustment
 	Analogy           *AnalogyEngine      // Analogical reasoning
 	SleepConsolidator *SleepConsolidator  // Sleep-dependent memory replay
+	Reasoning         *ReasoningEngine    // Deterministic symbolic reasoning (math, logic, sequences)
 
 	// Cortex Transformer — deep reasoning engine (RGBA32 ternary).
 	CortexStack *SharedCortexStack // ALBERT-style shared stack (24× compression)
@@ -137,6 +138,7 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		ErrorLearner:      NewErrorDrivenLearner(cfg),
 		Analogy:           NewAnalogyEngine(cfg, brain, encoder),
 		SleepConsolidator: NewSleepConsolidator(cfg),
+		Reasoning:         NewReasoningEngine(),
 
 		// CortexStack: 24 ALBERT layers, dim=SDRSize, 50 context, top-3 attention, decay=64
 		CortexStack: NewSharedCortexStack(24, cfg.SDRSize, 50, 3, 64),
@@ -185,6 +187,20 @@ func (o *Organism) Process(input string) string {
 	// Prefrontal).
 	understanding := o.Wernicke.Understand(input)
 	combinedSDR := understanding.Combined
+
+	// ── REASONING: Deterministic symbolic check (arithmetic, logic, sequences). ──
+	// This runs BEFORE the neural pipeline. If the input is a math problem,
+	// sequence puzzle, syllogism, or sorting request, we return the exact answer
+	// immediately instead of relying on SDR similarity matching.
+	if o.Reasoning != nil {
+		if reasonedAnswer, ok := o.Reasoning.TryReason(input); ok {
+			// Deterministic answer — maximum confidence, skip neural pipeline.
+			o.learnFromInteraction(input, reasonedAnswer, combinedSDR)
+			o.WorkingMem.Store(combinedSDR, input, 255)
+			o.WorkingMem.Tick()
+			return reasonedAnswer
+		}
+	}
 
 	// Union the sensory-derived SDR with Wernicke's combined SDR
 	// to enrich the representation with multi-channel signals.
@@ -278,20 +294,28 @@ func (o *Organism) Process(input string) string {
 		responseSDR = mem.Output
 		memoryUsed = true
 		memorySimilarity = sim
-		memoryText = strings.TrimSpace(mem.Context)
+		memoryText = extractAnswerFromContext(mem.Context)
 	}
 
 	// Keyword-based fallback: if SDR recall failed or produced a
-	// low-confidence match, try lexical keyword retrieval. This
-	// compensates for the false-overlap problem of union-encoded SDRs
-	// on long or keyword-rich sentences.
+	// low-confidence match, try lexical keyword retrieval with Brain
+	// association expansion. This compensates for the false-overlap
+	// problem of union-encoded SDRs and enables matching rephrased
+	// queries by expanding keywords through learned word associations.
 	if !memoryUsed || memorySimilarity < o.Config.PrefrontalConfThreshold {
 		inputTokens := Tokenize(input)
-		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, 1, combinedSDR); kwOK && kwScore > memorySimilarity {
+		// Try expanded recall first (uses Brain associations for synonym expansion).
+		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywordsExpanded(inputTokens, 1, combinedSDR, o.Brain); kwOK && kwScore > memorySimilarity {
 			responseSDR = kwMem.Output
 			memoryUsed = true
 			memorySimilarity = kwScore
-			memoryText = strings.TrimSpace(kwMem.Context)
+			memoryText = extractAnswerFromContext(kwMem.Context)
+		} else if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, 1, combinedSDR); kwOK && kwScore > memorySimilarity {
+			// Fall back to non-expanded keyword recall.
+			responseSDR = kwMem.Output
+			memoryUsed = true
+			memorySimilarity = kwScore
+			memoryText = extractAnswerFromContext(kwMem.Context)
 		}
 	}
 
@@ -471,6 +495,10 @@ func (o *Organism) Learn(text string) {
 // associative, and episodic memory. It deliberately does not persist a
 // direct question -> answer lookup table; recall is cued by SDR
 // similarity through the hippocampus.
+//
+// The hippocampus context stores "question | answer" so the keyword
+// index covers vocabulary from both sides, enabling generalization
+// queries that use question-adjacent words to locate the memory.
 func (o *Organism) LearnQA(question, answer string) {
 	question = strings.TrimSpace(question)
 	answer = strings.TrimSpace(answer)
@@ -489,11 +517,24 @@ func (o *Organism) LearnQA(question, answer string) {
 
 	questionSDR := o.Encoder.EncodeSentence(question)
 	answerSDR := o.Encoder.EncodeSentence(answer)
-	o.Hippocampus.Store(questionSDR, answerSDR, answer)
+	// Store "Q | A" as context so the keyword index covers both.
+	context := question + " | " + answer
+	o.Hippocampus.Store(questionSDR, answerSDR, context)
 }
 
 func sameText(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// extractAnswerFromContext extracts the answer part from a hippocampus
+// context string that was stored in "question | answer" format. If the
+// separator is not found, the whole string is returned (backward
+// compatible with older memories that stored only the answer).
+func extractAnswerFromContext(context string) string {
+	if idx := strings.Index(context, " | "); idx >= 0 {
+		return strings.TrimSpace(context[idx+3:])
+	}
+	return strings.TrimSpace(context)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -980,6 +1021,7 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		ErrorLearner:      NewErrorDrivenLearner(cfg),
 		Analogy:           NewAnalogyEngine(cfg, brain, encoder),
 		SleepConsolidator: NewSleepConsolidator(cfg),
+		Reasoning:         NewReasoningEngine(),
 
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),

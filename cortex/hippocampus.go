@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -64,10 +65,64 @@ var hippoStopWords = map[string]bool{
 	"for": true, "that": true, "this": true, "it": true, "are": true,
 	"was": true, "were": true, "be": true, "been": true, "how": true,
 	"who": true, "which": true, "?": true, ".": true,
+	"does": true, "do": true, "did": true, "has": true, "have": true,
+	"had": true, "will": true, "would": true, "could": true, "should": true,
+	"can": true, "may": true, "might": true, "shall": true, "must": true,
+	"with": true, "from": true, "by": true, "on": true, "at": true,
+	"as": true, "its": true, "their": true, "our": true, "your": true,
+	"his": true, "her": true, "my": true, "not": true, "no": true,
+	"but": true, "if": true, "then": true, "so": true, "than": true,
+	"where": true, "when": true, "why": true, "all": true, "each": true,
+	"every": true, "both": true, "few": true, "more": true, "most": true,
+	"other": true, "some": true, "such": true, "only": true, "own": true,
+	"same": true, "also": true, "about": true, "up": true, "out": true,
+	"into": true, "over": true, "after": true, "before": true,
+	"between": true, "under": true, "through": true, "during": true,
+	"keeps": true, "keep": true, "kept": true,
+}
+
+// stemSuffixes lists English suffixes to strip, ordered longest-first
+// so we greedily remove the longest applicable suffix.
+var stemSuffixes = []string{
+	"isation", "ization",
+	"ation", "tion", "sion",
+	"ment", "ness", "able", "ible", "ment",
+	"ical", "ious", "eous", "ance", "ence",
+	"ful", "ous", "ive", "ing", "ity",
+	"est", "ism",
+	"ly", "ed", "er", "es", "al",
+}
+
+// stemWord applies basic suffix-stripping to normalise word forms.
+// It strips common English suffixes so that related word forms
+// ("memories"/"memory", "consolidation"/"consolid") map to the same
+// stem. The minimum stem length is 3 characters to avoid over-stemming.
+func stemWord(word string) string {
+	word = strings.ToLower(word)
+	if len(word) <= 3 {
+		return word
+	}
+	// Handle irregular plurals before suffix stripping.
+	if strings.HasSuffix(word, "ies") && len(word) > 4 {
+		return word[:len(word)-3] + "i" // memories → memori
+	}
+	for _, suffix := range stemSuffixes {
+		if strings.HasSuffix(word, suffix) {
+			stem := word[:len(word)-len(suffix)]
+			if len(stem) >= 3 {
+				return stem
+			}
+		}
+	}
+	// Strip trailing 's' for simple plurals (but not if stem < 3).
+	if strings.HasSuffix(word, "s") && len(word) > 3 {
+		return word[:len(word)-1]
+	}
+	return word
 }
 
 // extractKeywords tokenises a context string and returns the unique,
-// lowercased content words (stop words removed).
+// stemmed, lowercased content words (stop words removed).
 func extractKeywords(context string) []string {
 	tokens := Tokenize(context)
 	seen := make(map[string]bool, len(tokens))
@@ -77,11 +132,12 @@ func extractKeywords(context string) []string {
 		if hippoStopWords[t] || t == "" {
 			continue
 		}
-		if seen[t] {
+		stem := stemWord(t)
+		if seen[stem] {
 			continue
 		}
-		seen[t] = true
-		kw = append(kw, t)
+		seen[stem] = true
+		kw = append(kw, stem)
 	}
 	return kw
 }
@@ -230,13 +286,17 @@ func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query S
 	}
 
 	// Count how many query keywords each memory matches.
+	// Keywords are stemmed to match the stemmed index.
 	hits := make(map[int]int) // memoryIndex → keyword overlap count
+	queryKeywords := 0
 	for _, kw := range keywords {
 		kw = strings.ToLower(kw)
 		if hippoStopWords[kw] {
 			continue
 		}
-		for _, idx := range h.keywordIndex[kw] {
+		queryKeywords++
+		stem := stemWord(kw)
+		for _, idx := range h.keywordIndex[stem] {
 			hits[idx]++
 		}
 	}
@@ -261,14 +321,11 @@ func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query S
 		return Memory{}, 0, false
 	}
 
-	// Compute a combined score: keyword fraction (0-200) + SDR sim (0-55).
-	// This biases towards keyword overlap while still using SDR as a
-	// tiebreaker.
-	keywordCount := len(keywords)
-	if keywordCount == 0 {
-		keywordCount = 1
-	}
-	kwScore := (bestHits * 200) / keywordCount
+	// Compute a combined score using distinct hit count.
+	// 1 hit → 130, 2 hits → 200+, ensuring even a single content-word
+	// match can pass the confidence threshold (128). This is safe
+	// because stop words are filtered and words are stemmed.
+	kwScore := bestHits * 130
 	if kwScore > 200 {
 		kwScore = 200
 	}
@@ -279,6 +336,179 @@ func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query S
 	}
 
 	return h.Memories[bestIdx], uint8(combined), true
+}
+
+// RecallByKeywordsExpanded performs keyword-based retrieval with
+// semantic expansion via Brain word associations. For each query
+// keyword, it looks up the Brain's top associations and adds them as
+// secondary keywords with fractional weight. This enables matching
+// rephrased queries like "personal event memories" against stored
+// memories about "episodic memories".
+//
+// The expansion weights secondary (associated) keyword hits at 0.5×
+// compared to direct keyword hits, so direct matches are always
+// preferred.
+func (h *Hippocampus) RecallByKeywordsExpanded(keywords []string, threshold int, query SDR, brain *Brain) (Memory, uint8, bool) {
+	if len(keywords) == 0 || len(h.Memories) == 0 {
+		return Memory{}, 0, false
+	}
+	if h.keywordIndex == nil {
+		return Memory{}, 0, false
+	}
+
+	// Phase 1: Expand query keywords using Brain associations.
+	// Each keyword is stemmed and looked up; associated words are
+	// added as secondary terms with lower weight.
+	type weightedKeyword struct {
+		stem   string
+		weight int // 2 = primary, 1 = secondary (from association)
+	}
+
+	seen := make(map[string]bool)
+	var expanded []weightedKeyword
+
+	for _, kw := range keywords {
+		kw = strings.ToLower(kw)
+		if hippoStopWords[kw] {
+			continue
+		}
+		stem := stemWord(kw)
+		if !seen[stem] {
+			seen[stem] = true
+			expanded = append(expanded, weightedKeyword{stem: stem, weight: 2})
+		}
+
+		// Look up Brain associations for this keyword.
+		if brain != nil {
+			assocWords := getTopAssociations(brain, kw, 5)
+			for _, aw := range assocWords {
+				awStem := stemWord(aw)
+				if !seen[awStem] && !hippoStopWords[aw] {
+					seen[awStem] = true
+					expanded = append(expanded, weightedKeyword{stem: awStem, weight: 1})
+				}
+			}
+		}
+	}
+
+	if len(expanded) == 0 {
+		return Memory{}, 0, false
+	}
+
+	// Phase 2: Score each memory by weighted keyword overlap.
+	hits := make(map[int]int) // memoryIndex → weighted hit count
+	for _, wk := range expanded {
+		for _, idx := range h.keywordIndex[wk.stem] {
+			hits[idx] += wk.weight
+		}
+	}
+
+	// The effective threshold is doubled because primary keywords have weight 2.
+	effectiveThreshold := threshold * 2
+
+	bestIdx := -1
+	bestHits := 0
+	var bestSim uint8
+
+	for idx, count := range hits {
+		if count < effectiveThreshold {
+			continue
+		}
+		sim := h.Memories[idx].Input.Similarity(query)
+		if count > bestHits || (count == bestHits && sim > bestSim) {
+			bestIdx = idx
+			bestHits = count
+			bestSim = sim
+		}
+	}
+
+	if bestIdx < 0 {
+		return Memory{}, 0, false
+	}
+
+	// Compute combined score. Primary keyword hits contribute 80 points
+	// each, secondary (association-expanded) hits contribute 40 points.
+	// This rewards the absolute number of matches rather than ratio.
+	primaryHits := 0
+	secondaryHits := 0
+	for _, wk := range expanded {
+		if wk.weight == 2 {
+			for _, idx := range h.keywordIndex[wk.stem] {
+				if idx == bestIdx {
+					primaryHits++
+					break
+				}
+			}
+		} else {
+			for _, idx := range h.keywordIndex[wk.stem] {
+				if idx == bestIdx {
+					secondaryHits++
+					break
+				}
+			}
+		}
+	}
+	kwScore := primaryHits*130 + secondaryHits*60
+	if kwScore > 200 {
+		kwScore = 200
+	}
+	sdrPart := int(bestSim) * 55 / 255
+	combined := kwScore + sdrPart
+	if combined > 255 {
+		combined = 255
+	}
+
+	return h.Memories[bestIdx], uint8(combined), true
+}
+
+// getTopAssociations returns the top-N associated words for a given
+// keyword from the Brain's synapse map. It sorts by synapse weight
+// and returns the decoded word strings.
+func getTopAssociations(brain *Brain, word string, topN int) []string {
+	if brain == nil || brain.Vocab == nil {
+		return nil
+	}
+
+	brain.mu.RLock()
+	defer brain.mu.RUnlock()
+
+	wordID := brain.Vocab.Get(word)
+	if wordID == 0 {
+		return nil
+	}
+
+	synapses := brain.Synapses[wordID]
+	if len(synapses) == 0 {
+		return nil
+	}
+
+	// Sort by weight descending.
+	type scoredSyn struct {
+		target uint32
+		weight uint16
+	}
+	scored := make([]scoredSyn, 0, len(synapses))
+	for _, s := range synapses {
+		if s.Flags&SynFlagActive != 0 && s.Weight > 0 {
+			scored = append(scored, scoredSyn{s.Target, s.Weight})
+		}
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].weight > scored[j].weight
+	})
+
+	if len(scored) > topN {
+		scored = scored[:topN]
+	}
+
+	result := make([]string, 0, len(scored))
+	for _, s := range scored {
+		w := brain.Vocab.Decode(s.target)
+		if w != "<UNK>" && w != word {
+			result = append(result, w)
+		}
+	}
+	return result
 }
 
 // addKeywordsForIndex adds the keywords extracted from context to the
