@@ -71,8 +71,8 @@ type Organism struct {
 	SleepConsolidator *SleepConsolidator  // Sleep-dependent memory replay
 	Reasoning         *ReasoningEngine    // Deterministic symbolic reasoning (math, logic, sequences)
 
-	// Cortex Transformer — deep reasoning engine (RGBA32 ternary).
-	CortexStack *SharedCortexStack // ALBERT-style shared stack (24× compression)
+	// The massive, infinitely scaling parameter engine
+	FractalCortex *FractalCortex // ALBERT-style shared stack (24× compression)
 
 	// Body systems — sensory input, motor output, biological timing.
 	Sensory *SensorySystem // Multi-channel sensory processing
@@ -152,8 +152,8 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		SleepConsolidator: NewSleepConsolidator(cfg),
 		Reasoning:         NewReasoningEngine(),
 
-		// CortexStack: 24 ALBERT layers, dim=SDRSize, 50 context, top-3 attention, decay=64
-		CortexStack: NewSharedCortexStack(24, cfg.SDRSize, 50, 3, 64, engine),
+		// FractalCortex: Infinite growing MoC ALBERT layers
+		FractalCortex: NewFractalCortex(cfg, engine),
 
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),
@@ -350,18 +350,27 @@ func (o *Organism) Process(input string) string {
 		responseSDR = o.Prefrontal.ThinkDeep(thinkInput, o.Config.PrefrontalMaxHops)
 		confidence = o.Prefrontal.GetConfidence()
 
-		// If Prefrontal is not confident, escalate to CortexStack (deep ternary).
-		// The CortexStack uses 24 ALBERT-shared layers of ternary weights
+		// If Prefrontal is not confident, escalate to FractalCortex (infinite dynamic scale).
+		// The FractalCortex routes through dynamically growing ALBERT-shared layers of ternary weights
 		// for deeper reasoning than the spiking network can provide.
-		if confidence < o.Config.PrefrontalConfThreshold && o.CortexStack != nil {
-			deepSDR := o.CortexStack.ProcessToken(thinkInput)
+		if confidence < o.Config.PrefrontalConfThreshold && o.FractalCortex != nil {
+			deepSDR := o.FractalCortex.ProcessToken(thinkInput)
+
 			if deepSDR.ActiveCount > 0 {
 				responseSDR = deepSDR
-				// Recompute confidence from CortexStack output quality
+				// Recompute confidence from FractalCortex output quality
 				overlap := sdrAnd(thinkInput, deepSDR)
+
+				errorMagnitude := 1.0
 				if thinkInput.ActiveCount > 0 {
-					confidence = uint8((overlap.ActiveCount * 255) / thinkInput.ActiveCount)
+					errorMagnitude = 1.0 - float64(overlap.ActiveCount)/float64(thinkInput.ActiveCount)
 				}
+
+				confidence = uint8((1.0 - errorMagnitude) * 255.0)
+
+				// AGI DYNAMIC GROWTH TRIGGER
+				// If error is high, this concept is alien. Spawn new physical parameters!
+				o.FractalCortex.CheckPredictionError(errorMagnitude)
 			}
 		}
 	}
