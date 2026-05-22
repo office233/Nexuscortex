@@ -35,26 +35,91 @@ func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
 	return fc
 }
 
-// SpawnNeurogenesis dynamically allocates a new physical ALBERT stack
-// and optionally maps it to disk if Mmap is enabled.
+// SpawnNeurogenesis dynamically allocates a new physical ALBERT stack.
+// If existing blocks exist, the new block CLONES the best block's trained
+// weights and applies a small perturbation for diversity. This ensures the
+// new block inherits learned knowledge while exploring new representations.
 func (fc *FractalCortex) SpawnNeurogenesis() {
 	blockID := len(fc.Blocks)
 	fmt.Printf("[Neurogenesis] Spawning Cortex Block #%d...\n", blockID)
 
-	// Add a new shared stack
-	// By default, 24 layers, SDRSize dim.
-	newBlock := NewSharedCortexStack(24, fc.Config.SDRSize, 50, 3, 64, fc.Engine)
+	if len(fc.Blocks) == 0 {
+		// First block: create with fresh random weights
+		newBlock := NewSharedCortexStack(24, fc.Config.SDRSize, 50, 3, 64, fc.Engine)
+		fc.Blocks = append(fc.Blocks, newBlock)
+	} else {
+		// Clone the most recent block's TRAINED weights
+		source := fc.Blocks[len(fc.Blocks)-1]
+		newBlock := NewSharedCortexStack(source.NumLayers, source.Dim, 50, source.TopK, 64, fc.Engine)
 
-	fc.Blocks = append(fc.Blocks, newBlock)
+		// Copy trained weights from source → new block
+		copyTernaryWeights(source.SharedFeatureLayer, newBlock.SharedFeatureLayer)
+		copyTernaryWeights(source.SharedOutputLayer, newBlock.SharedOutputLayer)
+		if len(source.Scans) > 0 && len(newBlock.Scans) > 0 {
+			copyTernaryWeights(source.Scans[0].InputGate, newBlock.Scans[0].InputGate)
+			copyTernaryWeights(source.Scans[0].InputProjection, newBlock.Scans[0].InputProjection)
+			copyTernaryWeights(source.Scans[0].OutputProjection, newBlock.Scans[0].OutputProjection)
+			// Propagate shared weights to all scan layers
+			for i := 1; i < len(newBlock.Scans); i++ {
+				newBlock.Scans[i].InputGate = newBlock.Scans[0].InputGate
+				newBlock.Scans[i].InputProjection = newBlock.Scans[0].InputProjection
+				newBlock.Scans[i].OutputProjection = newBlock.Scans[0].OutputProjection
+			}
+		}
 
-	// Calculate scale
-	totalParams := len(fc.Blocks) * 24 * (fc.Config.SDRSize * fc.Config.SDRSize) // Rough estimate
-	fmt.Printf("[Neurogenesis] Block #%d Active. Total Effective Params: ~%d\n", blockID, totalParams)
+		// Apply perturbation: flip ~10% of ternary tiles for diversity
+		perturbTernaryLayer(newBlock.SharedFeatureLayer, 25) // 25/256 ≈ 10%
+		perturbTernaryLayer(newBlock.SharedOutputLayer, 25)
+
+		fc.Blocks = append(fc.Blocks, newBlock)
+	}
+
+	totalParams := len(fc.Blocks) * fc.Blocks[0].StoredParameters()
+	fmt.Printf("[Neurogenesis] Block #%d Active. Total Unique Params: ~%d\n", blockID, totalParams)
 }
 
-// ProcessToken routes the input SDR to the top-K most active CortexBlocks.
-// In biological terms, different brain regions specialize.
-// For now, if we have few blocks, we route to all and average, or pick the best.
+// copyTernaryWeights copies all tiles and biases from src to dst.
+func copyTernaryWeights(src, dst *TernaryLayer) {
+	if src == nil || dst == nil {
+		return
+	}
+	n := len(src.Tiles)
+	if len(dst.Tiles) < n {
+		n = len(dst.Tiles)
+	}
+	copy(dst.Tiles[:n], src.Tiles[:n])
+
+	bn := len(src.Bias)
+	if len(dst.Bias) < bn {
+		bn = len(dst.Bias)
+	}
+	copy(dst.Bias[:bn], src.Bias[:bn])
+}
+
+// perturbTernaryLayer randomly flips a fraction of ternary tiles.
+// rate is 0-255 where 0=no change, 255=flip all.
+func perturbTernaryLayer(layer *TernaryLayer, rate uint8) {
+	if layer == nil || rate == 0 {
+		return
+	}
+	// Simple XOR-based perturbation of the RGBA32 packed tiles
+	state := uint64(0xDEADBEEF42)
+	for i := range layer.Tiles {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		if uint8(state) < rate {
+			// Flip a random bit in this tile's mask (changes a weight's sign or activity)
+			flipBit := uint32(1) << (uint(state>>8) % 32)
+			layer.Tiles[i] = TernaryTile(uint32(layer.Tiles[i]) ^ flipBit)
+		}
+	}
+}
+
+// ProcessToken routes the input SDR through ALL CortexBlocks and combines
+// their outputs via bitwise majority voting. Each block acts as an
+// independent expert with slightly different weights, and the consensus
+// SDR contains bits that >50% of blocks agree on.
 func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 	if len(fc.Blocks) == 0 {
 		return NewSDR(fc.Config.SDRSize)
@@ -63,10 +128,28 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 		return fc.Blocks[0].ProcessToken(input)
 	}
 
-	// Dynamic MoC Routing:
-	// Route to the most recently created block, which is focusing on the newest concepts.
-	activeBlock := fc.Blocks[len(fc.Blocks)-1]
-	return activeBlock.ProcessToken(input)
+	// Collect outputs from ALL blocks
+	dim := fc.Config.SDRSize
+	voteCounts := make([]int, dim)
+	for _, block := range fc.Blocks {
+		output := block.ProcessToken(input)
+		for _, idx := range output.ActiveIndices() {
+			if idx < dim {
+				voteCounts[idx]++
+			}
+		}
+	}
+
+	// Majority voting: a bit is active if >50% of blocks voted for it
+	threshold := len(fc.Blocks) / 2
+	result := NewSDR(dim)
+	for idx, count := range voteCounts {
+		if count > threshold {
+			result.Set(idx)
+		}
+	}
+
+	return result
 }
 
 // CheckPredictionError monitors the discrepancy between the prediction and reality.

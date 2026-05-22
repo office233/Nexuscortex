@@ -260,20 +260,22 @@ func (p *Prefrontal) GetConfidence() uint8 {
 // most stable (confident) response.
 
 
-// measureStability computes how consistent the firing patterns are
-// across the given snapshots. Returns 0 for completely random
-// patterns and 255 for perfectly identical patterns.
+// measureStability computes how consistent the ACTIVE firing patterns are
+// across the given snapshots. Returns 0 for no agreement and 255 for
+// perfectly identical firing patterns.
 //
-// Algorithm: for each pair of consecutive snapshots, count matching
-// neuron states (both fired or both silent) and divide by the total
-// neuron count. The final score is the average across all pairs,
-// scaled to 0–255 using integer arithmetic.
+// IMPORTANT: We only count neurons that FIRED in at least one of the two
+// patterns. Counting silent-silent matches is meaningless with sparse
+// networks (~5% active) because it would always produce ~95% stability.
+//
+// Algorithm: for each pair of consecutive snapshots, count neurons that
+// fired in BOTH (intersection) and divide by neurons that fired in EITHER
+// (union). This is the Jaccard index of active neurons, scaled to 0–255.
 func measureStability(patterns [][]bool) uint8 {
 	if len(patterns) < 2 {
 		return 0
 	}
 
-	// Accumulate match scores scaled to 255 per pair.
 	totalScore := 0
 	pairs := 0
 
@@ -289,14 +291,22 @@ func measureStability(patterns [][]bool) uint8 {
 			continue
 		}
 
-		matches := 0
+		intersection := 0 // Fired in BOTH
+		union := 0        // Fired in EITHER
+
 		for j := 0; j < n; j++ {
-			if prev[j] == curr[j] {
-				matches++
+			if prev[j] || curr[j] {
+				union++
+				if prev[j] && curr[j] {
+					intersection++
+				}
 			}
 		}
 
-		totalScore += matches * 255 / n
+		if union > 0 {
+			totalScore += intersection * 255 / union
+		}
+		// If union == 0, no neurons fired at all — skip this pair
 		pairs++
 	}
 

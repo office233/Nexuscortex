@@ -186,7 +186,8 @@ func (e *Encoder) EncodeSentence(text string) SDR {
 			shiftedIdx := (idx + shift) % e.sdrSize
 			if !combined.IsActive(shiftedIdx) {
 				combined.Set(shiftedIdx)
-				combined.ActiveCount++
+				// NOTE: Set() already increments ActiveCount internally.
+				// Do NOT increment again here — that caused double-counting.
 			}
 		}
 	}

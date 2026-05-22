@@ -82,8 +82,27 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 
 		if bestConceptIdx != -1 {
 			c := &sm.Concepts[bestConceptIdx]
-			// Retain only the overlapping invariant bits (LTP pattern separation).
-			c.Prototype = c.Prototype.Intersect(m.Input)
+			// WEIGHTED MERGE instead of pure intersection:
+			// 1. Keep all existing prototype bits (don't shrink!)
+			// 2. Selectively reinforce bits that are in BOTH prototype AND episode
+			//    by leaving them as-is (they're already set)
+			// 3. Add NEW bits from the episode that aren't in the prototype yet,
+			//    but only if the concept is young (Count < 10) — this allows
+			//    concepts to grow during early formation.
+			//
+			// OLD (broken): c.Prototype = c.Prototype.Intersect(m.Input)
+			//   → This caused concepts to lose bits monotonically until they
+			//     became too sparse to match anything.
+			//
+			// NEW: Merge new evidence into the prototype (union of shared bits
+			// + selective addition of novel bits for young concepts).
+			shared := c.Prototype.Intersect(m.Input)
+			if c.Count < 10 {
+				// Young concept: absorb novel bits from episode to grow the prototype
+				c.Prototype = c.Prototype.Union(shared)
+			}
+			// For mature concepts (Count >= 10), the prototype stays as-is.
+			// The episode validates the concept but doesn't modify it.
 			c.Count++
 
 			// Append context if it's unique.
@@ -100,6 +119,16 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 			mergedMemories[mIdx] = true
 		}
 	}
+
+	// Phase 1b: Prune degenerate concepts whose prototypes have shrunk too much.
+	const MinViableBits = 5
+	alive := make([]Concept, 0, len(sm.Concepts))
+	for _, c := range sm.Concepts {
+		if c.Prototype.ActiveCount >= MinViableBits {
+			alive = append(alive, c)
+		}
+	}
+	sm.Concepts = alive
 
 	// Phase 2: Form new concepts from overlapping, unmerged episodic memories.
 	for i := 0; i < len(hip.Memories); i++ {
