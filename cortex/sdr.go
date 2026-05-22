@@ -312,3 +312,14 @@ func (s SDR) Clone() SDR {
 		ActiveCount: s.ActiveCount,
 	}
 }
+
+// Hash returns a 64-bit FNV-1a hash of the SDR's active bits.
+// Used for fast cache lookup (SDRCache, expert routing cache).
+func (s SDR) Hash() uint64 {
+	h := uint64(14695981039346656037) // FNV offset basis
+	for _, word := range s.Bits {
+		h ^= word
+		h *= 1099511628211 // FNV prime
+	}
+	return h
+}
