@@ -46,3 +46,10 @@ data/cortex-auto/
 # Cache
 .cache/
 __pycache__/
+
+# Build artifacts
+*.a
+*.o
+
+# Scratch/experimental files in root
+scratch_test_*.go

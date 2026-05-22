@@ -3,7 +3,6 @@ package compute
 import (
 	"fmt"
 	"os"
-	"reflect"
 	"unsafe"
 
 	"github.com/edsrzf/mmap-go"
@@ -18,7 +17,11 @@ type MmapStorage struct {
 // NewMmapStorage maps an existing file or creates a new one of the given size (in bytes).
 // It returns a slice of uint32 that points directly to the file data.
 func NewMmapStorage(path string, sizeBytes int) (*MmapStorage, []uint32, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	if sizeBytes <= 0 || sizeBytes%4 != 0 {
+		return nil, nil, fmt.Errorf("sizeBytes must be positive and divisible by 4, got %d", sizeBytes)
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open file %s: %w", path, err)
 	}
@@ -42,12 +45,14 @@ func NewMmapStorage(path string, sizeBytes int) (*MmapStorage, []uint32, error) 
 		return nil, nil, fmt.Errorf("failed to mmap file %s: %w", path, err)
 	}
 
-	// Cast the mapped bytes to []uint32
-	var uint32Slice []uint32
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&uint32Slice))
-	header.Data = uintptr(unsafe.Pointer(&mapped[0]))
-	header.Len = len(mapped) / 4
-	header.Cap = len(mapped) / 4
+	if len(mapped) == 0 {
+		_ = mapped
+		file.Close()
+		return nil, nil, fmt.Errorf("mmap returned empty mapping for %s", path)
+	}
+
+	// Safe cast using unsafe.Slice (Go 1.17+) instead of deprecated reflect.SliceHeader
+	uint32Slice := unsafe.Slice((*uint32)(unsafe.Pointer(&mapped[0])), len(mapped)/4)
 
 	return &MmapStorage{
 		file: file,

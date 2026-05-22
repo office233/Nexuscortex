@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 )
 
+// MaxFractalBlocks limits the maximum number of cortex blocks to prevent unbounded growth.
+const MaxFractalBlocks = 8
+
 // FractalCortex is a dynamically growing "Mixture of Cortexes" (MoC).
 // It starts with one CortexBlock (a SharedCortexStack) and spawns new ones
-// when it encounters high novelty/error, allowing it to scale towards 5T parameters
+// when it encounters high novelty/error, allowing incremental parameter scaling
 // incrementally while keeping latency extremely low (sparse routing).
 type FractalCortex struct {
 	Blocks     []*SharedCortexStack
@@ -155,6 +158,9 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 // CheckPredictionError monitors the discrepancy between the prediction and reality.
 // If the error is consistently high, it triggers Neurogenesis to expand the physical parameter space.
 func (fc *FractalCortex) CheckPredictionError(errorMagnitude float64) {
+	if len(fc.Blocks) >= MaxFractalBlocks {
+		return
+	}
 	// Threshold for spawning a new cortex block
 	if errorMagnitude > 0.8 && !fc.GrowthLock {
 		fc.SpawnNeurogenesis()
@@ -252,6 +258,19 @@ func (fc *FractalCortex) Load(dataDir string) error {
 	var meta fcMeta
 	if err := json.Unmarshal(metaData, &meta); err != nil {
 		return fmt.Errorf("fractal_cortex unmarshal meta: %w", err)
+	}
+
+	if meta.BlocksCount < 0 || meta.BlocksCount > 16 {
+		return fmt.Errorf("invalid blocks_count: %d", meta.BlocksCount)
+	}
+	if meta.NumLayers <= 0 || meta.NumLayers > 64 {
+		return fmt.Errorf("invalid num_layers: %d", meta.NumLayers)
+	}
+	if meta.Dim <= 0 || meta.Dim > 100_000 {
+		return fmt.Errorf("invalid dim: %d", meta.Dim)
+	}
+	if meta.TopK <= 0 || meta.TopK > 32 {
+		return fmt.Errorf("invalid top_k: %d", meta.TopK)
 	}
 
 	// Reconstruct blocks

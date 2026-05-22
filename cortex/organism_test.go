@@ -18,6 +18,7 @@ func TestOrganismNoEchoRegression(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DataDir = tempDir
 	org := NewOrganism(cfg, rng)
+	org.FractalCortex = nil // Disable FractalCortex to test pure empty-brain fallback
 
 	input := "where do neurons fire?"
 
@@ -29,9 +30,8 @@ func TestOrganismNoEchoRegression(t *testing.T) {
 		t.Errorf("FAIL: input prompt %q was echoed back as the response!", input)
 	}
 
-	// Since there is no learned data, the response should fall back to the structured low-confidence policy:
-	// "?"
-	expected := "?"
+	// Since there is no learned data, the response should fall back to the no-confidence policy.
+	expected := "(no confident response)"
 	if response != expected {
 		t.Errorf("expected low-confidence fallback %q for empty brain, got: %q", expected, response)
 	}

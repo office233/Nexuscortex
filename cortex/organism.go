@@ -381,7 +381,7 @@ func (o *Organism) Process(input string) string {
 
 				confidence = uint8((1.0 - errorMagnitude) * 255.0)
 
-				// AGI DYNAMIC GROWTH TRIGGER
+				// Dynamic growth trigger — spawn new cortex block on high error
 				// If error is high, this concept is alien. Spawn new physical parameters!
 				o.FractalCortex.CheckPredictionError(errorMagnitude)
 			}
@@ -389,8 +389,8 @@ func (o *Organism) Process(input string) string {
 	}
 
 	// ── 5. SPEAK (Broca) ─────────────────────────────────────────
-	// Generate a response autoregressively token-by-token (True Language Model).
-	// If Hippocampus retrieved a memory, inject it as context (RAG behavior).
+	// Generate a response autoregressively through FractalCortex ternary layers.
+	// If Hippocampus retrieved a memory, inject it as context (RAG-style).
 	if o.FractalCortex != nil && len(understanding.Words) > 0 {
 		contextWords := make([]string, 0, len(understanding.Words)+10)
 		if memoryUsed && memoryText != "" {
@@ -401,9 +401,9 @@ func (o *Organism) Process(input string) string {
 		contextWords = append(contextWords, understanding.Words...)
 		
 		responseText = o.Broca.GenerateAutoregressive(o.FractalCortex, contextWords, o.Config.MaxGenWords)
-		if responseText != "" {
-			confidence = 255 // Generated text implies successful AGI processing
-		}
+		// NOTE: Do NOT set confidence=255 just because text was generated.
+		// A non-empty output does not mean a correct output. Confidence
+		// should reflect actual quality from Prefrontal/Hippocampus pipeline.
 	}
 
 	// Fallback to associative / SDR generation if autoregression didn't work or wasn't used
@@ -575,7 +575,7 @@ func (o *Organism) LearnQA(question, answer string) {
 	context := question + " | " + answer
 	o.Hippocampus.Store(questionSDR, answerSDR, context)
 
-	// AGI Autoregressive Training (STDP)
+	// FractalCortex Autoregressive Training (STDP)
 	if o.FractalCortex != nil {
 		// Encode the full sequence (Q | A) token by token to create a sequence array
 		// We add "|" as a separator token so the cortex learns to transition from Q to A

@@ -308,7 +308,7 @@ func (b *Broca) GenerateFromContext(context []string, maxWords int) string {
 
 // GenerateAutoregressive generates text by feeding tokens sequentially into the
 // stateful FractalCortex, predicting the next token, and appending it to the context.
-// This forms a true language model P(w_t | w_1...w_{t-1}) loop.
+// This forms an autoregressive P(w_t | w_1...w_{t-1}) generation loop.
 func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string, maxTokens int) string {
 	if fc == nil || len(contextWords) == 0 || maxTokens <= 0 {
 		return ""

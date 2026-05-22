@@ -270,6 +270,21 @@ func (l *TernaryLayer) Forward(input []int16) []int16 {
 // Only processes input positions that are non-zero — much faster when
 // input sparsity is high (e.g., SDR with 0.5% active bits).
 func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) []int16 {
+	output := make([]int16, l.OutputSize)
+	copy(output, l.Bias)
+
+	if l.InputSize <= 0 || l.OutputSize <= 0 || len(l.Tiles) == 0 {
+		return output
+	}
+	if len(activeIndices) != len(activeValues) {
+		return output
+	}
+	for _, idx := range activeIndices {
+		if idx < 0 || idx >= l.InputSize {
+			return output
+		}
+	}
+
 	if l.Engine != nil {
 		// Delegate to hardware engine
 		if eng, ok := l.Engine.(interface {
@@ -293,9 +308,6 @@ func (l *TernaryLayer) ForwardSparse(activeIndices []int, activeValues []int16) 
 			return eng.ForwardSparse(indices32, activeValues, tiles32, l.Bias, l.TilesPerRow, l.OutputSize)
 		}
 	}
-
-	output := make([]int16, l.OutputSize)
-	copy(output, l.Bias)
 
 	for j := 0; j < l.OutputSize; j++ {
 		var acc int32
@@ -412,6 +424,17 @@ func UnmarshalTernaryLayer(data []byte) (*TernaryLayer, error) {
 
 	inputSize := int(binary.LittleEndian.Uint32(data[4:8]))
 	outputSize := int(binary.LittleEndian.Uint32(data[8:12]))
+
+	const maxDim = 100_000
+	if inputSize <= 0 || outputSize <= 0 || inputSize > maxDim || outputSize > maxDim {
+		return nil, fmt.Errorf("invalid layer dimensions: input=%d output=%d", inputSize, outputSize)
+	}
+
+	tilesPerRow := (inputSize + 15) / 16
+	expectedSize := 12 + outputSize*2 + outputSize*tilesPerRow*4
+	if expectedSize < 12 || expectedSize > len(data) {
+		return nil, fmt.Errorf("ternary layer data length mismatch: got=%d expected=%d", len(data), expectedSize)
+	}
 
 	l := NewTernaryLayer(inputSize, outputSize)
 
