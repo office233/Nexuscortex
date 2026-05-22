@@ -7,7 +7,7 @@ package cortex
 //
 // The loop:
 //   1. CURIOSITY  — Identify knowledge gaps (what don't I know?)
-//   2. SEARCH     — Query Wikipedia/web for answers
+//   2. SEARCH     — Query Wikipedia + HuggingFace Datasets for answers
 //   3. LEARN      — Feed discoveries through Brain/Hippocampus/Wernicke
 //   4. EVALUATE   — Test myself on what I learned
 //   5. CONSOLIDATE — Sleep-style memory organization
@@ -43,6 +43,7 @@ type AutonomousLearner struct {
 	LearnInterval    time.Duration // How often to run a learn cycle
 	MaxGapsPerCycle  int           // Max gaps to address per cycle
 	SearchLangs      []string      // Languages to search ("en", "ro")
+	HFRowsPerDataset int           // Max rows to fetch per HuggingFace dataset
 
 	// Stats
 	CycleCount    int
@@ -54,6 +55,9 @@ type AutonomousLearner struct {
 	// Seed topics for initial curiosity
 	SeedTopics []string
 
+	// Seed HuggingFace datasets to learn from directly
+	SeedDatasets []string
+
 	mu sync.Mutex
 }
 
@@ -64,9 +68,10 @@ func NewAutonomousLearner(org *Organism) *AutonomousLearner {
 		Web:        NewWebLearner(),
 		Evaluator:  NewSelfEvaluator(),
 		MaxGaps:    1000,
-		LearnInterval:   30 * time.Second,
-		MaxGapsPerCycle: 3,
-		SearchLangs:     []string{"en", "ro"},
+		LearnInterval:    30 * time.Second,
+		MaxGapsPerCycle:  3,
+		SearchLangs:      []string{"en", "ro"},
+		HFRowsPerDataset: 20,
 		SeedTopics: []string{
 			// Science
 			"photosynthesis", "DNA", "evolution", "gravity", "atom",
@@ -87,6 +92,11 @@ func NewAutonomousLearner(org *Organism) *AutonomousLearner {
 			// Romanian topics
 			"România", "București", "Carpați", "Dunărea",
 			"istoria României", "Mihai Eminescu",
+		},
+		SeedDatasets: []string{
+			"tatsu-lab/alpaca", // instruction-following
+			"gsm8k",           // math reasoning
+			"hellaswag",       // commonsense reasoning
 		},
 	}
 }
@@ -135,10 +145,23 @@ func (al *AutonomousLearner) Run(ctx context.Context, logFn func(string)) {
 
 	// Seed initial curiosity
 	logFn("🧠 Autonomous Learner starting...")
-	logFn(fmt.Sprintf("📚 Seeding %d initial topics for curiosity", len(al.SeedTopics)))
+	logFn(fmt.Sprintf("📚 Seeding %d initial topics + %d HuggingFace datasets",
+		len(al.SeedTopics), len(al.SeedDatasets)))
 
 	for _, topic := range al.SeedTopics {
 		al.AddGap(topic, 0) // confidence=0 → totally unknown
+	}
+
+	// Pre-learn from seed HuggingFace datasets
+	for _, dsID := range al.SeedDatasets {
+		logFn(fmt.Sprintf("  🤗 Pre-loading HuggingFace dataset: %s", dsID))
+		learned, err := al.Web.LearnFromHuggingFace(al.Organism, dsID, al.HFRowsPerDataset)
+		if err != nil {
+			logFn(fmt.Sprintf("    ⚠️  HuggingFace dataset %s failed: %v", dsID, err))
+		} else {
+			logFn(fmt.Sprintf("    ✅ Learned %d items from %s", learned, dsID))
+			al.TotalLearned += learned
+		}
 	}
 
 	logFn(fmt.Sprintf("🔄 Learning cycle every %v, %d gaps per cycle", al.LearnInterval, al.MaxGapsPerCycle))
@@ -197,7 +220,7 @@ func (al *AutonomousLearner) LearnCycle(logFn func(string)) {
 
 		totalLearned := 0
 
-		// Search in all configured languages
+		// ── Wikipedia search ──────────────────────────────────────────────
 		for _, lang := range al.SearchLangs {
 			results, err := al.Web.SearchWikipedia(gap.Query, lang, 3)
 			if err != nil {
@@ -234,6 +257,25 @@ func (al *AutonomousLearner) LearnCycle(logFn func(string)) {
 				al.Evaluator.AddTestFromFact(summary.Title, summary.Content, summary.Source)
 
 				logFn(fmt.Sprintf("    ✅ Learned: \"%s\" (%d chars)", summary.Title, len(summary.Content)))
+			}
+		}
+
+		// ── HuggingFace Datasets search ──────────────────────────────────
+		hfResults, err := al.Web.SearchHuggingFace(gap.Query, 2)
+		if err != nil {
+			logFn(fmt.Sprintf("    ⚠️  HuggingFace search failed: %v", err))
+		} else if len(hfResults) > 0 {
+			logFn(fmt.Sprintf("    🤗 Found %d HuggingFace datasets", len(hfResults)))
+			for _, ds := range hfResults {
+				learned, err := al.Web.LearnFromHuggingFace(al.Organism, ds.Title, al.HFRowsPerDataset)
+				if err != nil {
+					logFn(fmt.Sprintf("    ⚠️  HF dataset %s failed: %v", ds.Title, err))
+					continue
+				}
+				if learned > 0 {
+					totalLearned += learned
+					logFn(fmt.Sprintf("    ✅ Learned %d items from HF:%s", learned, ds.Title))
+				}
 			}
 		}
 

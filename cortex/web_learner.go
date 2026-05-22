@@ -197,6 +197,244 @@ func (wl *WebLearner) LearnFromResults(org *Organism, results []SearchResult) in
 	return learned
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// HuggingFace Datasets API integration
+// ──────────────────────────────────────────────────────────────────────────────
+
+const (
+	hfDatasetSearchURL = "https://huggingface.co/api/datasets"
+	hfDatasetInfoURL   = "https://huggingface.co/api/datasets/"
+	hfRowsURL          = "https://datasets-server.huggingface.co/rows"
+	hfUserAgent        = "NexusCortex/1.0"
+)
+
+// SearchHuggingFace searches the HuggingFace Datasets API for datasets
+// matching the query. Returns up to maxResults results with dataset
+// descriptions as content.
+func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchResult, error) {
+	wl.throttle()
+	wl.TotalSearches++
+
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
+	apiURL := fmt.Sprintf("%s?search=%s&limit=%d",
+		hfDatasetSearchURL, url.QueryEscape(query), maxResults)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("huggingface request build failed: %w", err)
+	}
+	req.Header.Set("User-Agent", hfUserAgent)
+
+	resp, err := wl.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("huggingface search failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("huggingface search returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var datasets []struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+		Author      string `json:"author"`
+		Downloads   int    `json:"downloads"`
+	}
+	if err := json.Unmarshal(body, &datasets); err != nil {
+		return nil, fmt.Errorf("huggingface parse failed: %w", err)
+	}
+
+	var results []SearchResult
+	for _, ds := range datasets {
+		snippet := ds.Description
+		if len(snippet) > 300 {
+			snippet = snippet[:300] + "..."
+		}
+		results = append(results, SearchResult{
+			Title:   ds.ID,
+			Snippet: snippet,
+			Content: ds.Description,
+			URL:     "https://huggingface.co/datasets/" + ds.ID,
+			Source:  "huggingface",
+		})
+	}
+	return results, nil
+}
+
+// LearnFromHuggingFace fetches rows from a HuggingFace dataset and feeds them
+// through the Organism's learning pipeline.
+// It looks for common field patterns: instruction/output, question/answer,
+// text, input/output, etc.
+// Returns the count of items successfully learned.
+func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxRows int) (int, error) {
+	wl.throttle()
+
+	if maxRows <= 0 {
+		maxRows = 20
+	}
+
+	apiURL := fmt.Sprintf("%s?dataset=%s&config=default&split=train&offset=0&length=%d",
+		hfRowsURL, url.QueryEscape(datasetID), maxRows)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("huggingface rows request build failed: %w", err)
+	}
+	req.Header.Set("User-Agent", hfUserAgent)
+
+	resp, err := wl.Client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("huggingface rows fetch failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("huggingface rows returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	// The rows API returns { "rows": [ { "row": { ... } }, ... ] }
+	var result struct {
+		Rows []struct {
+			Row map[string]interface{} `json:"row"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("huggingface rows parse failed: %w", err)
+	}
+
+	learned := 0
+	for _, entry := range result.Rows {
+		row := entry.Row
+		if row == nil {
+			continue
+		}
+
+		question, answer := extractQAPair(row)
+
+		if question != "" && answer != "" {
+			// Instruction/response style — use QA learning
+			org.LearnQA(question, answer)
+			learned++
+		} else if text := extractTextField(row); text != "" {
+			// Free-text style — passive learning
+			org.Brain.Learn(text)
+			tokens := Tokenize(text)
+			org.Wernicke.LearnContext(tokens)
+			learned++
+		}
+	}
+
+	wl.TotalLearned += learned
+	wl.TotalFacts += learned
+	return learned, nil
+}
+
+// extractQAPair tries to find a question/answer pair from a HuggingFace row.
+// Supports common field naming conventions.
+func extractQAPair(row map[string]interface{}) (question, answer string) {
+	// Try instruction/output (Alpaca-style)
+	if q, ok := row["instruction"]; ok {
+		question = asString(q)
+	}
+	if a, ok := row["output"]; ok {
+		answer = asString(a)
+	}
+	if question != "" && answer != "" {
+		// Append input if present (Alpaca has instruction + input + output)
+		if inp, ok := row["input"]; ok {
+			if s := asString(inp); s != "" {
+				question = question + " " + s
+			}
+		}
+		return
+	}
+
+	// Try question/answer (QA-style)
+	if q, ok := row["question"]; ok {
+		question = asString(q)
+	}
+	if a, ok := row["answer"]; ok {
+		answer = asString(a)
+	}
+	if question != "" && answer != "" {
+		return
+	}
+
+	// Try prompt/completion
+	if q, ok := row["prompt"]; ok {
+		question = asString(q)
+	}
+	if a, ok := row["completion"]; ok {
+		answer = asString(a)
+	}
+	if question != "" && answer != "" {
+		return
+	}
+
+	// Try ctx/endings (HellaSwag style)
+	if q, ok := row["ctx"]; ok {
+		question = asString(q)
+	}
+	if a, ok := row["endings"]; ok {
+		answer = asString(a)
+	}
+	if question != "" && answer != "" {
+		return
+	}
+
+	return "", ""
+}
+
+// extractTextField tries to find a free-text field from a HuggingFace row.
+func extractTextField(row map[string]interface{}) string {
+	for _, key := range []string{"text", "content", "sentence", "passage", "document"} {
+		if v, ok := row[key]; ok {
+			if s := asString(v); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// asString converts an interface{} to string, handling common JSON types.
+func asString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case float64:
+		return fmt.Sprintf("%.0f", val)
+	case []interface{}:
+		// Join array elements (e.g. HellaSwag endings)
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " | ")
+	default:
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 // cleanHTML removes HTML tags from a string (simple approach).
 func cleanHTML(s string) string {
 	var result strings.Builder
