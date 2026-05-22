@@ -51,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let pollingInterval = null;
     let isSleeping = false;
+    let nexusToken = '';
 
     // Helper: Escapes HTML tags to prevent XSS
     function escapeHTML(str) {
@@ -178,6 +179,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function fetchToken() {
+        try {
+            const res = await fetch('/api/token');
+            if (res.ok) {
+                const data = await res.json();
+                nexusToken = data.token;
+            } else {
+                console.error("Token fetch returned non-OK status:", res.status);
+            }
+        } catch (err) {
+            console.error("Failed to fetch API security token:", err);
+        }
+    }
+
     // Start stats polling
     function startPolling() {
         if (pollingInterval) clearInterval(pollingInterval);
@@ -211,7 +226,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 // ── Passive Learning absorbing pipeline ─────────────────────
                 const response = await fetch('/api/learn', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-Nexus-Token': nexusToken
+                    },
                     body: JSON.stringify({ message: text })
                 });
 
@@ -235,7 +253,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 // ── Cognitive dialogue pipeline ─────────────────────────────
                 const response = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-Nexus-Token': nexusToken
+                    },
                     body: JSON.stringify({ message: text })
                 });
 
@@ -317,7 +338,10 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             // Trigger Go sleep API endpoint
-            const res = await fetch('/api/sleep', { method: 'POST' });
+            const res = await fetch('/api/sleep', { 
+                method: 'POST',
+                headers: { 'X-Nexus-Token': nexusToken }
+            });
             if (!res.ok) throw new Error("Consolidation routine crashed");
             const delta = await res.json();
             
@@ -532,7 +556,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/feedback', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Nexus-Token': nexusToken
+                },
                 body: JSON.stringify({
                     topic: topic,
                     responseText: responseText,
@@ -604,7 +631,10 @@ document.addEventListener('DOMContentLoaded', () => {
         addConsoleLine("> Commencing sleep-deliberation on active cognitive tracks...");
         
         try {
-            const res = await fetch('/api/selftrain', { method: 'POST' });
+            const res = await fetch('/api/selftrain', { 
+                method: 'POST',
+                headers: { 'X-Nexus-Token': nexusToken }
+            });
             if (!res.ok) throw new Error("Autonomous reflection process faulted");
             const delta = await res.json();
             
@@ -708,5 +738,9 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSelfTrain.addEventListener('click', triggerSelfTrain);
 
     // Initial setup
-    startPolling();
+    async function initialize() {
+        await fetchToken();
+        startPolling();
+    }
+    initialize();
 });

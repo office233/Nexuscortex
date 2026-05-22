@@ -105,6 +105,28 @@ func (wl *WebLearner) throttle() {
 	wl.lastReq = time.Now()
 }
 
+func isAllowedURL(targetURL string) bool {
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+
+	allowed := []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
+	for _, domain := range allowed {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
 // SearchWikipedia searches Wikipedia for articles matching the query.
 // Returns up to maxResults results with summaries.
 func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int) ([]SearchResult, error) {
@@ -122,6 +144,9 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 	apiURL := fmt.Sprintf("https://%s.%s/w/api.php?action=query&list=search&srsearch=%s&srlimit=%d&format=json&utf8=1",
 		lang, wl.WikiBaseURL, url.QueryEscape(query), maxResults)
 
+	if !isAllowedURL(apiURL) {
+		return nil, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
+	}
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -134,6 +159,10 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 		return nil, fmt.Errorf("wikipedia search failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wikipedia search returned status %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, wl.BodyLimit))
 	if err != nil {
@@ -177,6 +206,10 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 	apiURL := fmt.Sprintf("https://%s.%s/api/rest_v1/page/summary/%s",
 		lang, wl.WikiBaseURL, url.PathEscape(title))
 
+	if !isAllowedURL(apiURL) {
+		return nil, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
+	}
+
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("wikipedia summary request failed: %w", err)
@@ -188,6 +221,10 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 		return nil, fmt.Errorf("wikipedia summary failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wikipedia summary returned status %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, wl.BodyLimit))
 	if err != nil {
@@ -264,6 +301,10 @@ func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchR
 	apiURL := fmt.Sprintf("%s?search=%s&limit=%d",
 		wl.HFSearchURL, url.QueryEscape(query), maxResults)
 
+	if !isAllowedURL(apiURL) {
+		return nil, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
+	}
+
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("huggingface request build failed: %w", err)
@@ -326,6 +367,10 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 
 	apiURL := fmt.Sprintf("%s?dataset=%s&config=default&split=train&offset=0&length=%d",
 		wl.HFRowsURL, url.QueryEscape(datasetID), maxRows)
+
+	if !isAllowedURL(apiURL) {
+		return 0, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
+	}
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {

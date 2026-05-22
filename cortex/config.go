@@ -509,6 +509,28 @@ func (c Config) Validate() error {
 		return fmt.Errorf("PredictorUnionDepth (%d) > PredictorWindowSize (%d)", c.PredictorUnionDepth, c.PredictorWindowSize)
 	}
 
+	// Thousand Brains constraints
+	if c.ThousandBrainsColumns <= 0 || c.ThousandBrainsColumns > 1000 {
+		return fmt.Errorf("ThousandBrainsColumns must be in [1, 1000], got %d", c.ThousandBrainsColumns)
+	}
+	if c.ThousandBrainsColNeurons <= 0 || c.ThousandBrainsColNeurons > 10000 {
+		return fmt.Errorf("ThousandBrainsColNeurons must be in [1, 10000], got %d", c.ThousandBrainsColNeurons)
+	}
+	if c.ThousandBrainsColConnectivity <= 0.0 || c.ThousandBrainsColConnectivity > 1.0 {
+		return fmt.Errorf("ThousandBrainsColConnectivity must be in (0.0, 1.0], got %f", c.ThousandBrainsColConnectivity)
+	}
+	if c.ThousandBrainsProcessTicks <= 0 || c.ThousandBrainsProcessTicks > 100 {
+		return fmt.Errorf("ThousandBrainsProcessTicks must be in [1, 100], got %d", c.ThousandBrainsProcessTicks)
+	}
+
+	// Prefrontal Reasoning constraints
+	if c.PrefrontalConnectivity <= 0.0 || c.PrefrontalConnectivity > 1.0 {
+		return fmt.Errorf("PrefrontalConnectivity must be in (0.0, 1.0], got %f", c.PrefrontalConnectivity)
+	}
+	if c.PrefrontalMaxHops <= 0 || c.PrefrontalMaxHops > 100 {
+		return fmt.Errorf("PrefrontalMaxHops must be in [1, 100], got %d", c.PrefrontalMaxHops)
+	}
+
 	// Autonomous learner constraints
 	if c.AutoHFRowsPerDS < 0 || c.AutoHFRowsPerDS > 100_000 {
 		return fmt.Errorf("AutoHFRowsPerDS must be in [0, 100000], got %d", c.AutoHFRowsPerDS)
@@ -521,11 +543,77 @@ func (c Config) Validate() error {
 	}
 
 	// Web server constraints
+	if c.WebBindAddr == "" {
+		return fmt.Errorf("WebBindAddr cannot be empty")
+	}
 	if c.WebPort != "" {
 		p, err := strconv.Atoi(c.WebPort)
 		if err != nil || p < 1 || p > 65535 {
 			return fmt.Errorf("WebPort must be a valid port [1-65535], got %q", c.WebPort)
 		}
+	}
+
+	// WebLearner configuration constraints
+	if c.WebLearnerTimeoutSecs <= 0 || c.WebLearnerTimeoutSecs > 120 {
+		return fmt.Errorf("WebLearnerTimeoutSecs must be in [1, 120], got %d", c.WebLearnerTimeoutSecs)
+	}
+	if c.WebLearnerRateLimitMs < 0 || c.WebLearnerRateLimitMs > 60000 {
+		return fmt.Errorf("WebLearnerRateLimitMs must be in [0, 60000], got %d", c.WebLearnerRateLimitMs)
+	}
+	if c.WebLearnerBodyLimitMB <= 0 || c.WebLearnerBodyLimitMB > 100 {
+		return fmt.Errorf("WebLearnerBodyLimitMB must be in [1, 100], got %d", c.WebLearnerBodyLimitMB)
+	}
+	if c.WebLearnerWikiBaseURL == "" {
+		return fmt.Errorf("WebLearnerWikiBaseURL cannot be empty")
+	}
+	if c.WebLearnerHFSearchURL == "" {
+		return fmt.Errorf("WebLearnerHFSearchURL cannot be empty")
+	}
+	if c.WebLearnerHFRowsURL == "" {
+		return fmt.Errorf("WebLearnerHFRowsURL cannot be empty")
+	}
+	if c.WebLearnerUserAgent == "" {
+		return fmt.Errorf("WebLearnerUserAgent cannot be empty")
+	}
+
+	// Memory capacity and queue limits
+	if c.RewardSystemCapacity <= 0 || c.RewardSystemCapacity > 1_000_000 {
+		return fmt.Errorf("RewardSystemCapacity must be in [1, 1000000], got %d", c.RewardSystemCapacity)
+	}
+	if c.EmotionHistoryCapacity <= 0 || c.EmotionHistoryCapacity > 1_000_000 {
+		return fmt.Errorf("EmotionHistoryCapacity must be in [1, 1000000], got %d", c.EmotionHistoryCapacity)
+	}
+	if c.CuriosityHistoryCapacity <= 0 || c.CuriosityHistoryCapacity > 1_000_000 {
+		return fmt.Errorf("CuriosityHistoryCapacity must be in [1, 1000000], got %d", c.CuriosityHistoryCapacity)
+	}
+	if c.SensoryBufferCapacity <= 0 || c.SensoryBufferCapacity > 1_000_000 {
+		return fmt.Errorf("SensoryBufferCapacity must be in [1, 1000000], got %d", c.SensoryBufferCapacity)
+	}
+	if c.MotorQueueCapacity <= 0 || c.MotorQueueCapacity > 1_000_000 {
+		return fmt.Errorf("MotorQueueCapacity must be in [1, 1000000], got %d", c.MotorQueueCapacity)
+	}
+	if c.MotorHistoryCapacity <= 0 || c.MotorHistoryCapacity > 1_000_000 {
+		return fmt.Errorf("MotorHistoryCapacity must be in [1, 1000000], got %d", c.MotorHistoryCapacity)
+	}
+	if c.WorkspaceMaxQueueSize <= 0 || c.WorkspaceMaxQueueSize > 1_000_000 {
+		return fmt.Errorf("WorkspaceMaxQueueSize must be in [1, 1000000], got %d", c.WorkspaceMaxQueueSize)
+	}
+	if c.WorkingMemoryCapacity <= 0 || c.WorkingMemoryCapacity > 1_000_000 {
+		return fmt.Errorf("WorkingMemoryCapacity must be in [1, 1000000], got %d", c.WorkingMemoryCapacity)
+	}
+	if c.AttentionHistorySize <= 0 || c.AttentionHistorySize > 1_000_000 {
+		return fmt.Errorf("AttentionHistorySize must be in [1, 1000000], got %d", c.AttentionHistorySize)
+	}
+	if c.AnalogyMaxCandidates <= 0 || c.AnalogyMaxCandidates > 1_000_000 {
+		return fmt.Errorf("AnalogyMaxCandidates must be in [1, 1000000], got %d", c.AnalogyMaxCandidates)
+	}
+	if c.CerebellumMaxCacheSize <= 0 || c.CerebellumMaxCacheSize > 1_000_000 {
+		return fmt.Errorf("CerebellumMaxCacheSize must be in [1, 1000000], got %d", c.CerebellumMaxCacheSize)
+	}
+
+	// Beam search constraints
+	if c.BeamSearchWidth <= 0 || c.BeamSearchWidth > 100 {
+		return fmt.Errorf("BeamSearchWidth must be in [1, 100], got %d", c.BeamSearchWidth)
 	}
 
 	return nil

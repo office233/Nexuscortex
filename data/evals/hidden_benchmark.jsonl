@@ -1,0 +1,16 @@
+{"input": "Cine a scris Luceafărul?", "expected": "Mihai Eminescu", "category": "wikipedia"}
+{"input": "Care este capitala României?", "expected": "București", "category": "wikipedia"}
+{"input": "Ce mare fluviu curge prin România și se varsă în Marea Neagră?", "expected": "Dunărea", "category": "wikipedia"}
+{"input": "Unde se află Munții Carpați?", "expected": "România", "category": "wikipedia"}
+{"input": "What is the process of photosynthesis?", "expected": "photosynthesis plants sunlight glucose oxygen", "category": "wikipedia"}
+{"input": "Who formulated the theory of general relativity?", "expected": "relativity Einstein", "category": "wikipedia"}
+{"input": "What is the basic unit of life in cell biology?", "expected": "cell biology", "category": "wikipedia"}
+{"input": "What is a prime number?", "expected": "prime number only itself", "category": "wikipedia"}
+{"input": "How many legs does a green apple have?", "expected": "(no confident response)", "category": "reasoning"}
+{"input": "When did humans build a city and land on the sun?", "expected": "(no confident response)", "category": "reasoning"}
+{"input": "What is the mobile phone number of Julius Caesar?", "expected": "(no confident response)", "category": "reasoning"}
+{"input": "Why is the winter snow hot and burning?", "expected": "(no confident response)", "category": "reasoning"}
+{"input": "Explain why cats fly like birds in the sky.", "expected": "(no confident response)", "category": "reasoning"}
+{"input": "What is the next number in the Fibonacci sequence 1, 1, 2, 3, 5, 8?", "expected": "13 Fibonacci", "category": "reasoning"}
+{"input": "If all humans are mortal and Socrates is a human, what is Socrates?", "expected": "Socrates is mortal", "category": "reasoning"}
+{"input": "Is the number seven a prime number?", "expected": "seven prime number", "category": "reasoning"}

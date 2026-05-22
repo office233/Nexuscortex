@@ -28,6 +28,15 @@ jobs:
       - name: Go test (race detector)
         run: go test -race -count=1 -timeout 300s ./...
 
+      - name: Fuzz UnmarshalTernaryLayer smoke
+        run: go test -run=^$ -fuzz=FuzzUnmarshalTernaryLayer -fuzztime=15s ./cortex
+
+      - name: Fuzz LoadSemanticMemory smoke
+        run: go test -run=^$ -fuzz=FuzzLoadSemanticMemory -fuzztime=15s ./cortex
+
+      - name: Fuzz FractalCortexLoadMetadata smoke
+        run: go test -run=^$ -fuzz=FuzzFractalCortexLoadMetadata -fuzztime=15s ./cortex
+
       - name: Build all commands
         run: go build ./cmd/...
 

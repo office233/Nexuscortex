@@ -81,6 +81,13 @@ func main() {
 	}
 	fmt.Printf("Loaded %d comprehensive test cases from %s\n\n", len(cases), path)
 
+	fmt.Println("  ⚠️  EVALUATION NOTICE:")
+	fmt.Println("  Word overlap evaluation is a lexical proximity metric (Jaccard-like overlap of keywords).")
+	fmt.Println("  It serves as a fast diagnostic tool for semantic recall and cognitive association, but")
+	fmt.Println("  does not assess linguistic fluency, syntactic correctness, or grammatical coherence.")
+	fmt.Println("  Full evaluation scoring (FULL >= 80%, PARTIAL >= 50%) is strict and aims to limit false positives.")
+	fmt.Println()
+
 	results := runComprehensive(cases, newOrganism)
 	printComprehensiveReport(results)
 }
@@ -134,7 +141,7 @@ func runComprehensive(cases []ComprehensiveCase, newOrg func() *cortex.Organism)
 		score := "FAIL"
 		if overlap >= 0.80 {
 			score = "FULL"
-		} else if overlap > 0.20 {
+		} else if overlap >= 0.50 {
 			score = "PARTIAL"
 		}
 

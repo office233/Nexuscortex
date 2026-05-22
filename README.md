@@ -33,16 +33,17 @@ For portfolio purposes, the value of this project is the systems design, experim
 ```text
 Nexuscortex/
 ├── cmd/
-│   ├── corpus-convert/        # Converts mixed JSONL corpora into canonical training data
-│   ├── autonomous-learner/    # Runs continuous learning cycles
-│   ├── eval-runner/           # Runs isolated evaluation suites and capability reports
-│   ├── trainer/               # Curriculum training and surprise-based replay
-│   └── web-dashboard/         # Local introspection dashboard
+│   ├── corpus-convert/     # Converts mixed JSONL corpora into canonical training data
+│   ├── cortex-autonomous/  # Runs continuous autonomous learning cycles
+│   ├── cortex-eval/        # Runs comprehensive evaluation suites and capability reports
+│   ├── cortex-train/       # Curriculum training and surprise-based replay
+│   ├── cortex-web/         # Local Web Neural Dashboard / Introspection Server
+│   └── cortex-diagnose/    # System configuration diagnostic utility
 ├── cortex/                    # Core organism, encoder, memory, prediction, eval, and learning logic
 ├── web/                       # Dashboard assets / web server helpers
 ├── data/
 │   ├── corpus/                # Small demo corpora; large corpora are gitignored
-│   ├── evals/                 # Evaluation suites
+│   ├── evals/                 # Evaluation suites (including hidden_benchmark.jsonl)
 │   └── cortex/                # Runtime state; generated artifacts are gitignored
 └── .gitignore                 # Excludes models, caches, binaries, and generated state
 ```
@@ -60,7 +61,7 @@ Supported input formats include instruction/response, prompt/completion, GSM8K-s
 ### 2. Train a local organism
 
 ```bash
-go run ./cmd/trainer \
+go run ./cmd/cortex-train \
   -data-dir ./data/cortex \
   -corpus ./data/corpus/general.jsonl \
   -epochs 15 \
@@ -73,29 +74,30 @@ The trainer supports deterministic seeds, curriculum sorting, surprise-based rev
 ### 3. Run evaluation suites
 
 ```bash
-go run ./cmd/eval-runner -data-dir ./data/cortex
+# Run standard evaluation on the comprehensive suite
+go run ./cmd/cortex-eval -data-dir ./data/cortex
+
+# Run the strict Romanian + English hidden benchmark suite
+go run ./cmd/cortex-eval -data-dir ./data/cortex -eval ./data/evals/hidden_benchmark.jsonl
 ```
 
-The eval runner reports failed test cases, recall score, anti-echo behavior, generalization suite performance, confidence calibration, and an aggregate capability score.
+The eval runner reports failed test cases, category scoring breakdown, word-overlap performance metrics, and a total composite capability score.
 
 ### 4. Run autonomous learning loop
 
 ```bash
-go run ./cmd/autonomous-learner \
-  -data-dir ./data/cortex \
-  -interval 30 \
-  -gaps 3
+go run ./cmd/cortex-autonomous -data-dir ./data/cortex
 ```
 
-This loop is designed for experiments around curiosity-driven gap detection, learning cycles, and persistence.
+This loop is designed for continuous autonomous learning cycles utilizing gap detection, Wikipedia search, and HuggingFace training segments.
 
 ### 5. Start local dashboard
 
 ```bash
-go run ./cmd/web-dashboard -port 8080 -data-dir ./data/cortex
+go run ./cmd/cortex-web -port 8080 -data-dir ./data/cortex -open
 ```
 
-The dashboard is intended for local introspection of state, metrics, and learning behavior.
+The dashboard provides a premium real-time visualization of cognitive drives, prefrontal synaptic weights, emotional valence vector states, and conversational introspection.
 
 ## Evaluation philosophy
 

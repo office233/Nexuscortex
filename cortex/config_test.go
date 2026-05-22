@@ -1,0 +1,54 @@
+package cortex
+
+import (
+	"testing"
+)
+
+func TestConfigValidation(t *testing.T) {
+	// 1. Default config should validate successfully
+	cfg := DefaultConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected default config to be valid, got error: %v", err)
+	}
+
+	// 2. Empty WebBindAddr should be rejected
+	cfg = DefaultConfig()
+	cfg.WebBindAddr = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty WebBindAddr, got nil")
+	}
+
+	// 3. WebLearnerTimeoutSecs > 120 should be rejected
+	cfg = DefaultConfig()
+	cfg.WebLearnerTimeoutSecs = 150
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for WebLearnerTimeoutSecs > 120, got nil")
+	}
+
+	// 4. WebLearnerBodyLimitMB > 100 should be rejected
+	cfg = DefaultConfig()
+	cfg.WebLearnerBodyLimitMB = 150
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for WebLearnerBodyLimitMB > 100, got nil")
+	}
+
+	// 5. Invalid ThousandBrainsColConnectivity should be rejected
+	cfg = DefaultConfig()
+	cfg.ThousandBrainsColConnectivity = 1.5
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ThousandBrainsColConnectivity > 1.0, got nil")
+	}
+
+	// 6. Invalid capacities should be rejected
+	cfg = DefaultConfig()
+	cfg.RewardSystemCapacity = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RewardSystemCapacity <= 0, got nil")
+	}
+
+	cfg = DefaultConfig()
+	cfg.EmotionHistoryCapacity = -5
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for EmotionHistoryCapacity <= 0, got nil")
+	}
+}

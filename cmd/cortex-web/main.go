@@ -1,6 +1,8 @@
 package main
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -33,6 +35,18 @@ type Server struct {
 	mu         sync.Mutex
 	lastFocus  string
 	lastSource string
+	token      string
+	port       int
+}
+
+func generateRandomToken() string {
+	bytes := make([]byte, 16)
+	if _, err := crand.Read(bytes); err != nil {
+		for i := range bytes {
+			bytes[i] = byte(rand.Intn(256))
+		}
+	}
+	return hex.EncodeToString(bytes)
 }
 
 func main() {
@@ -47,6 +61,7 @@ func main() {
 	fresh := flag.Bool("fresh", false, "Start with a new organism (ignore saved state)")
 	noSave := flag.Bool("no-save", false, "Don't auto-save state on exit")
 	seed := flag.Int64("seed", defaultCfg.Seed, "Random seed for biological core initialization")
+	authToken := flag.String("token", "", "Security token for dashboard authentication (empty to auto-generate, 'none' to disable)")
 	flag.Parse()
 
 	// Construct Organism configuration
@@ -58,6 +73,17 @@ func main() {
 	cfg.WebPort = *port
 	cfg.WebBindAddr = *bindAddr
 	cfg.Demo = false // Server handles interactivity dynamically
+
+	token := *authToken
+	if token == "" {
+		token = generateRandomToken()
+	} else if token == "none" {
+		token = ""
+	}
+
+	if cfg.WebBindAddr != "127.0.0.1" && cfg.WebBindAddr != "localhost" && token == "" {
+		log.Fatal("refusing non-loopback bind without auth token")
+	}
 
 	// Print visual launch banner
 	fmt.Println()
@@ -93,6 +119,7 @@ func main() {
 		org:        org,
 		lastSource: "Prefrontal Think",
 		lastFocus:  "",
+		token:      token,
 	}
 
 	// ── Mount Route Mapping ──────────────────────────────────────────
@@ -101,6 +128,53 @@ func main() {
 	http.Handle("/", staticFS)
 
 	// REST API Endpoints
+	http.HandleFunc("/api/token", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Strict Same-Origin/Referer Verification for the token retrieval itself
+		origin := r.Header.Get("Origin")
+		referer := r.Header.Get("Referer")
+		allowedOrigins := []string{
+			fmt.Sprintf("http://localhost:%d", server.port),
+			fmt.Sprintf("http://127.0.0.1:%d", server.port),
+			fmt.Sprintf("http://[::1]:%d", server.port),
+		}
+		if server.org.Config.WebBindAddr != "127.0.0.1" && server.org.Config.WebBindAddr != "localhost" {
+			allowedOrigins = append(allowedOrigins, fmt.Sprintf("http://%s:%d", server.org.Config.WebBindAddr, server.port))
+		}
+
+		if origin != "" {
+			matched := false
+			for _, o := range allowedOrigins {
+				if origin == o {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				http.Error(w, "Forbidden: invalid Origin", http.StatusForbidden)
+				return
+			}
+		} else if referer != "" {
+			matched := false
+			for _, o := range allowedOrigins {
+				if len(referer) >= len(o) && referer[:len(o)] == o {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				http.Error(w, "Forbidden: invalid Referer", http.StatusForbidden)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": server.token})
+	})
+
 	http.HandleFunc("/api/stats", server.GetStatsHandler)
 	http.HandleFunc("/api/chat", server.ChatHandler)
 	http.HandleFunc("/api/learn", server.LearnHandler)
@@ -150,6 +224,7 @@ func main() {
 		listener, bindErr = net.Listen("tcp", addr)
 		if bindErr == nil {
 			actualPort = p
+			server.port = p
 			*port = strconv.Itoa(p)
 			break
 		}
@@ -173,14 +248,71 @@ func main() {
 	}
 
 	fmt.Printf("  🖥️  Listening for HTTP requests on http://localhost:%d\n", actualPort)
+	fmt.Printf("  🔑 Security Token: %s\n", server.token)
 	if err := http.Serve(listener, nil); err != nil {
 		log.Fatalf("  ❌ Failed to serve HTTP: %v", err)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// HTTP API Handlers
+// HTTP API Handlers & Security Validations
 // ─────────────────────────────────────────────────────────────────────
+
+// validateRequest verifies the security token and Same-Origin headers for mutating calls
+func (s *Server) validateRequest(w http.ResponseWriter, r *http.Request) bool {
+	// 1. Validate the X-Nexus-Token custom header
+	token := r.Header.Get("X-Nexus-Token")
+	if token == "" || token != s.token {
+		http.Error(w, "Unauthorized: invalid or missing X-Nexus-Token", http.StatusUnauthorized)
+		return false
+	}
+
+	// 2. Perform strict Same-Origin / Referer validation
+	origin := r.Header.Get("Origin")
+	referer := r.Header.Get("Referer")
+
+	allowedOrigins := []string{
+		fmt.Sprintf("http://localhost:%d", s.port),
+		fmt.Sprintf("http://127.0.0.1:%d", s.port),
+		fmt.Sprintf("http://[::1]:%d", s.port),
+	}
+	bindAddr := s.org.Config.WebBindAddr
+	if bindAddr != "127.0.0.1" && bindAddr != "localhost" && bindAddr != "" {
+		allowedOrigins = append(allowedOrigins, fmt.Sprintf("http://%s:%d", bindAddr, s.port))
+	}
+
+	if origin != "" {
+		matched := false
+		for _, o := range allowedOrigins {
+			if origin == o {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			http.Error(w, "Forbidden: invalid Origin header value", http.StatusForbidden)
+			return false
+		}
+	} else if referer != "" {
+		matched := false
+		for _, o := range allowedOrigins {
+			if len(referer) >= len(o) && referer[:len(o)] == o {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			http.Error(w, "Forbidden: invalid Referer header value", http.StatusForbidden)
+			return false
+		}
+	} else {
+		// Origin or Referer is strictly required for mutating requests to block headless automated abuse
+		http.Error(w, "Forbidden: missing Origin or Referer header", http.StatusForbidden)
+		return false
+	}
+
+	return true
+}
 
 // GetStatsHandler returns JSON representation of internal modules
 func (s *Server) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
@@ -203,12 +335,25 @@ func (s *Server) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.validateRequest(w, r) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var req struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, "Request Entity Too Large: body exceeds 1MB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Bad Request: message is required", http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		http.Error(w, "Bad Request: message cannot be empty", http.StatusBadRequest)
 		return
 	}
 
@@ -283,12 +428,25 @@ func (s *Server) LearnHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.validateRequest(w, r) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var req struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, "Request Entity Too Large: body exceeds 1MB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Bad Request: message is required", http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		http.Error(w, "Bad Request: message cannot be empty", http.StatusBadRequest)
 		return
 	}
 
@@ -324,6 +482,9 @@ func (s *Server) LearnHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SleepHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.validateRequest(w, r) {
 		return
 	}
 
@@ -395,6 +556,9 @@ func (s *Server) SaveHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.validateRequest(w, r) {
+		return
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -414,29 +578,17 @@ func (s *Server) SaveHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Browser Launch helper
-// ─────────────────────────────────────────────────────────────────────
-
-func openBrowserCmd(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	case "darwin":
-		cmd = exec.Command("open", url)
-	default: // Linux and other POSIX compliant platforms
-		cmd = exec.Command("xdg-open", url)
-	}
-	_ = cmd.Start()
-}
-
 // FeedbackHandler processes human reinforcement (thumbs up/down and corrections)
 func (s *Server) FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.validateRequest(w, r) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var req struct {
 		Topic        string `json:"topic"`
@@ -445,6 +597,10 @@ func (s *Server) FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 		CorrectText  string `json:"correctText"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, "Request Entity Too Large: body exceeds 1MB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Bad Request: invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -475,6 +631,9 @@ func (s *Server) FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SelfTrainHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.validateRequest(w, r) {
 		return
 	}
 
@@ -515,4 +674,21 @@ func (s *Server) SelfTrainHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Browser Launch helper
+// ─────────────────────────────────────────────────────────────────────
+
+func openBrowserCmd(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default: // Linux and other POSIX compliant platforms
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
 }
