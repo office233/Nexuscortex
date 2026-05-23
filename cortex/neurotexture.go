@@ -6,6 +6,7 @@ import (
 	"math/bits"
 	"os"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -283,13 +284,9 @@ func (c *SDRCache) Lookup(input SDR) (SDR, bool) {
 	c.mu.RUnlock()
 
 	if ok {
-		c.mu.Lock()
-		c.hits++
-		c.mu.Unlock()
+		atomic.AddUint64(&c.hits, 1)
 	} else {
-		c.mu.Lock()
-		c.misses++
-		c.mu.Unlock()
+		atomic.AddUint64(&c.misses, 1)
 	}
 	return result, ok
 }
@@ -317,20 +314,23 @@ func (c *SDRCache) Store(input, output SDR) {
 
 // HitRate returns the cache hit ratio (0.0 to 1.0).
 func (c *SDRCache) HitRate() float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	total := c.hits + c.misses
+	hits := atomic.LoadUint64(&c.hits)
+	misses := atomic.LoadUint64(&c.misses)
+	total := hits + misses
 	if total == 0 {
 		return 0
 	}
-	return float64(c.hits) / float64(total)
+	return float64(hits) / float64(total)
 }
 
 // Stats returns cache statistics.
 func (c *SDRCache) Stats() (size int, hits, misses uint64) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.cache), c.hits, c.misses
+	size = len(c.cache)
+	c.mu.RUnlock()
+	hits = atomic.LoadUint64(&c.hits)
+	misses = atomic.LoadUint64(&c.misses)
+	return size, hits, misses
 }
 
 // ─────────────────────────────────────────────────────────────────────
