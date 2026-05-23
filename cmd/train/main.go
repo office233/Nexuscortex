@@ -64,6 +64,7 @@ func main() {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	cfg := cortex.DefaultConfig()
 	cfg.DataDir = "./data/cortex-training"
+	cfg.NeuroRadioEnabled = true // 🔥 Enable unified architecture
 
 	// ══════════════════════════════════════════════════════════
 	// LOAD EXTERNAL TRAINING DATA
@@ -125,10 +126,31 @@ func main() {
 		phase1Start := time.Now()
 		for i, text := range textCorpus {
 			org.Learn(text)
+
+			// Feed co-occurrence data to SemanticFreqCodec
+			if org.NeuroRadio != nil {
+				// Tokenize into word IDs and observe co-occurrence
+				words := strings.Fields(strings.ToLower(text))
+				ids := make([]int, len(words))
+				for w, word := range words {
+					ids[w] = int(org.Vocab.GetOrCreate(word))
+				}
+				org.NeuroRadio.Codec.ObserveCooccurrence(ids)
+			}
+
 			if (i+1)%20 == 0 || i+1 == len(textCorpus) {
 				fmt.Printf("  📝 Absorbed %d / %d texts\n", i+1, len(textCorpus))
 			}
 		}
+
+		// Build semantic frequencies from co-occurrence
+		if org.NeuroRadio != nil {
+			org.NeuroRadio.Codec.AssignFrequencies()
+			nTok, nFreq, nCooc := org.NeuroRadio.Codec.Stats()
+			fmt.Printf("  🎯 SemanticFreqCodec: %d tokens → %d frequencies (%d co-occurrences)\n",
+				nTok, nFreq, nCooc)
+		}
+
 		fmt.Printf("  ✅ Absorbed %d texts in %v\n\n", len(textCorpus), time.Since(phase1Start))
 	}
 
@@ -170,6 +192,74 @@ func main() {
 		radioStats := org.RadioCortex.Stats()
 		fmt.Printf("     Radio ticks: %d | Alive: %d/%d | Avg amplitude: %d\n\n",
 			radioStats.TickCount, radioStats.AliveNeurons, radioStats.TotalNeurons, radioStats.AvgAmplitude)
+	}
+
+	// ══════════════════════════════════════════════════════════
+	// PHASE 2.5: NeuroRadioCortex Training (unified architecture)
+	// ══════════════════════════════════════════════════════════
+	if org.NeuroRadio != nil && len(qaCorpus) > 0 {
+		epochs := 5
+		fmt.Println("┌──────────────────────────────────────────────────────────────┐")
+		fmt.Printf("│  ⚡ PHASE 2.5: NEURO-RADIO TRAINING (%d epochs × %d pairs)    │\n", epochs, len(qaCorpus))
+		fmt.Println("│  TernaryTile weights + RadioMeta routing + Semantic Freqs    │")
+		fmt.Println("└──────────────────────────────────────────────────────────────┘")
+
+		nrStart := time.Now()
+		for epoch := 1; epoch <= epochs; epoch++ {
+			epochStart := time.Now()
+			fmt.Printf("\n  ⚡ NR Epoch %d/%d:\n", epoch, epochs)
+
+			totalMatches := 0
+			perm := rng.Perm(len(qaCorpus))
+			for i, idx := range perm {
+				qa := qaCorpus[idx]
+
+				// Tokenize Q and A into vocab IDs
+				qWords := strings.Fields(strings.ToLower(qa.Q))
+				aWords := strings.Fields(strings.ToLower(qa.A))
+
+				qIDs := make([]int, len(qWords))
+				for w, word := range qWords {
+					qIDs[w] = int(org.Vocab.GetOrCreate(word))
+				}
+
+				// Train on each answer word as target
+				for _, word := range aWords {
+					targetID := int(org.Vocab.GetOrCreate(word))
+					matches := org.NeuroRadio.TrainStep(qIDs, targetID, 5)
+					totalMatches += matches
+				}
+
+				// Also feed co-occurrence
+				allWords := append(qWords, aWords...)
+				allIDs := make([]int, len(allWords))
+				for w, word := range allWords {
+					allIDs[w] = int(org.Vocab.GetOrCreate(word))
+				}
+				org.NeuroRadio.Codec.ObserveCooccurrence(allIDs)
+
+				if (i+1)%30 == 0 {
+					nrStats := org.NeuroRadio.Stats()
+					fmt.Printf("     [%3d/%d] ticks: %d | alive: %d/%d | active: %d | avg amp: %d | matches: %d\n",
+						i+1, len(qaCorpus),
+						nrStats.TickCount, nrStats.AliveTiles, nrStats.TotalTiles,
+						nrStats.ActiveLast, nrStats.AvgAmplitude, totalMatches)
+				}
+			}
+
+			// Neurogenesis between epochs
+			replaced := org.NeuroRadio.Neurogenesis()
+			fmt.Printf("  🧬 Epoch %d done (%v) | Neurogenesis: %d tiles replaced\n",
+				epoch, time.Since(epochStart), replaced)
+
+			// Re-assign semantic frequencies every epoch
+			org.NeuroRadio.Codec.AssignFrequencies()
+		}
+
+		fmt.Printf("\n  ✅ NeuroRadio training complete in %v\n", time.Since(nrStart))
+		nrFinal := org.NeuroRadio.Stats()
+		fmt.Printf("     Tiles: %d alive / %d total | Avg amplitude: %d | Ticks: %d\n\n",
+			nrFinal.AliveTiles, nrFinal.TotalTiles, nrFinal.AvgAmplitude, nrFinal.TickCount)
 	}
 
 	// ══════════════════════════════════════════════════════════
@@ -238,6 +328,15 @@ func main() {
 	fmt.Printf("  📡 Radio neurons         : %d (alive: %d)\n", radioFinal.TotalNeurons, radioFinal.AliveNeurons)
 	fmt.Printf("  📡 Radio ticks           : %d\n", radioFinal.TickCount)
 	fmt.Printf("  📡 Radio avg amplitude   : %d / 255\n", radioFinal.AvgAmplitude)
+
+	if org.NeuroRadio != nil {
+		nrFinal := org.NeuroRadio.Stats()
+		fmt.Printf("  ⚡ NeuroRadio tiles       : %d (alive: %d)\n", nrFinal.TotalTiles, nrFinal.AliveTiles)
+		fmt.Printf("  ⚡ NeuroRadio ticks       : %d\n", nrFinal.TickCount)
+		fmt.Printf("  ⚡ NeuroRadio avg amp     : %d / 255\n", nrFinal.AvgAmplitude)
+		fmt.Printf("  ⚡ NeuroRadio last active : %d\n", nrFinal.ActiveLast)
+	}
+
 	fmt.Printf("  💚 Mood                  : %s\n", stats.EmotionalMood)
 	fmt.Printf("  🪞 Self accuracy         : %d / 255\n", stats.SelfAccuracy)
 	fmt.Printf("  💬 Total interactions     : %d\n", stats.InteractionCount)

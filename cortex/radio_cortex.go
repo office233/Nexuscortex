@@ -94,11 +94,11 @@ func NewRadioCortex(size int, rng *rand.Rand) *RadioCortex {
 		} else if i >= size-outputSize {
 			// Output neurons: listen on freq 128-191, emit on 192-255
 			freqListen = uint8(128 + rng.Intn(64))
-			freqEmit = uint8(rng.Intn(64)) // wrap to output range (6-bit)
+			freqEmit = uint8(192 + rng.Intn(64)) // full range output band
 		} else {
-			// Hidden neurons: full range, emit shifted by +32
+			// Hidden neurons: full range listen and emit
 			freqListen = uint8(rng.Intn(256))
-			freqEmit = uint8((int(freqListen) + 32 + rng.Intn(32)) % 64) // 6-bit
+			freqEmit = uint8((int(freqListen) + 32 + rng.Intn(64)) % 256) // full 256
 		}
 
 		phase := uint8(rng.Intn(256))
@@ -294,10 +294,10 @@ func (rc *RadioCortex) Neurogenesis() int {
 			freqEmit = uint8(64 + rc.rng.Intn(64))
 		} else if i >= rc.OutputStart {
 			freqListen = uint8(128 + rc.rng.Intn(64))
-			freqEmit = uint8(rc.rng.Intn(64))
+			freqEmit = uint8(192 + rc.rng.Intn(64))
 		} else {
 			freqListen = uint8(rc.rng.Intn(256))
-			freqEmit = uint8((int(freqListen) + 32 + rc.rng.Intn(32)) % 64)
+			freqEmit = uint8((int(freqListen) + 32 + rc.rng.Intn(64)) % 256)
 		}
 
 		rc.Neurons[i] = PackRadioNeuron(

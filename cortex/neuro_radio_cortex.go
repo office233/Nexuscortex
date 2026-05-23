@@ -189,7 +189,7 @@ func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 		listenFreq := uint8(rng.Intn(256))
 		phase := uint8(rng.Intn(256))
 		amplitude := uint8(100 + rng.Intn(156)) // Start strong (100-255)
-		emitFreq := uint8(rng.Intn(64))          // 6-bit emit freq
+		emitFreq := uint8(rng.Intn(256))          // full 0-255 emit freq
 		inhibitory := rng.Intn(5) == 0           // 20% inhibitory
 
 		tiles[i] = NewNeuroRadioTile(weights, confidence, listenFreq, phase, amplitude, emitFreq, inhibitory)
@@ -354,7 +354,7 @@ func (nrc *NeuroRadioCortex) Neurogenesis() int {
 				uint8(nrc.rng.Intn(256)),
 				uint8(nrc.rng.Intn(256)),
 				uint8(100+nrc.rng.Intn(156)),
-				uint8(nrc.rng.Intn(64)),
+				uint8(nrc.rng.Intn(256)),
 				nrc.rng.Intn(5) == 0,
 			)
 			replaced++
