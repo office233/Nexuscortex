@@ -236,6 +236,10 @@ type Config struct {
 	EnableQuantumInspired bool  `json:"enable_quantum_inspired"`  // Use QuantumRouter instead of ExpertRouter
 	QuantumTemperature     uint8 `json:"quantum_temperature"`       // PBit temperature (0=deterministic, 255=max stochastic)
 	QuantumMultiSamples    int   `json:"quantum_multi_samples"`     // Multi-sample passes (1=no multi-sample)
+
+	// RadioCortex configuration
+	RadioNeuronCount int    `json:"radio_neuron_count"` // Number of radio neurons (default 1_000_000)
+	TrainingDataDir  string `json:"training_data_dir"` // Directory with qa.json and texts.txt
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -485,6 +489,10 @@ func DefaultConfig() Config {
 		EnableQuantumInspired: false,
 		QuantumTemperature:    0,   // deterministic
 		QuantumMultiSamples:   1,   // no multi-sample
+
+		// RadioCortex defaults
+		RadioNeuronCount: 1_000_000, // 1M neurons (was hardcoded 100K)
+		TrainingDataDir:  "./data/training",
 	}
 }
 

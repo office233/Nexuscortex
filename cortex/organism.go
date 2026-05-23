@@ -75,6 +75,12 @@ type Organism struct {
 	// The massive, infinitely scaling parameter engine
 	FractalCortex *FractalCortex // ALBERT-style shared stack (24× compression)
 
+	// Radio frequency-based neural processor — neurons linked by resonance.
+	// Replaces explicit synapses with 256-channel frequency bus.
+	// Each neuron = 4 bytes RGBA32 (freq, phase, amplitude, routing).
+	RadioCortex *RadioCortex
+	SignalCodec *SignalCodec // Token ↔ frequency mapping
+
 	// Broca 2.0 — transformer-based language model (optional).
 	// When both are non-nil, Broca uses the transformer for generation.
 	// When nil, falls back to Broca 1.0 (associative chain walker).
@@ -162,6 +168,10 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 
 		// FractalCortex: Infinite growing MoC ALBERT layers
 		FractalCortex: NewFractalCortex(cfg, engine),
+
+		// RadioCortex: frequency-based neural processor (configurable, default 1M neurons)
+		RadioCortex: NewRadioCortex(cfg.RadioNeuronCount, rng),
+		SignalCodec: NewSignalCodec(1000), // initial vocab, grows dynamically
 
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),
@@ -371,6 +381,57 @@ func (o *Organism) Process(input string) string {
 		responseSDR = o.Prefrontal.ThinkDeep(thinkInput, o.Config.PrefrontalMaxHops)
 		confidence = o.Prefrontal.GetConfidence()
 
+		// ── RADIO CORTEX: Frequency-based processing via SignalCodec. ──
+		// Convert input words to frequency chords and propagate through 100K neurons.
+		if o.RadioCortex != nil && o.SignalCodec != nil {
+			// Ensure codec covers current vocab
+			if o.Vocab.Size() > o.SignalCodec.vocabSize {
+				o.SignalCodec.GrowVocab(o.Vocab.Size())
+			}
+
+			// Encode input words as frequency chords
+			var tokenIDs []int
+			for _, w := range understanding.Words {
+				if id := o.Vocab.Get(w); id > 0 {
+					tokenIDs = append(tokenIDs, int(id))
+				}
+			}
+
+			if len(tokenIDs) > 0 {
+				// Clear and inject via codec (not raw SDR)
+				o.RadioCortex.Bus.Clear()
+				o.SignalCodec.EncodeTokens(&o.RadioCortex.Bus, tokenIDs, 200)
+
+				// Activate input neurons
+				for i := o.RadioCortex.InputStart; i < o.RadioCortex.InputEnd; i++ {
+					n := &o.RadioCortex.Neurons[i]
+					signal, busPhase := o.RadioCortex.Bus.Read(n.FreqListen())
+					if signal > 0 {
+						resonance := Resonance(n.Phase(), busPhase)
+						if resonance > 20 {
+							o.RadioCortex.Fired[i] = true
+						}
+					}
+				}
+
+				// 20 ticks — enough for input → hidden → hidden → output
+				for tick := 0; tick < 20; tick++ {
+					o.RadioCortex.Step()
+				}
+
+				// After training period, blend Radio output
+				if o.RadioCortex.TickCount > 1000 && confidence < o.Config.PrefrontalConfThreshold {
+					radioSDR := o.RadioCortex.ReadOutputSDR(combinedSDR.Size)
+					if radioSDR.ActiveCount > 5 {
+						filtered := responseSDR.Intersect(radioSDR)
+						if filtered.ActiveCount > 0 {
+							responseSDR = filtered
+						}
+					}
+				}
+			}
+		}
+
 		// If Prefrontal is not confident, escalate to FractalCortex (infinite dynamic scale).
 		// The FractalCortex routes through dynamically growing ALBERT-shared layers of ternary weights
 		// for deeper reasoning than the spiking network can provide.
@@ -411,6 +472,17 @@ func (o *Organism) Process(input string) string {
 		)
 	}
 
+	// ── PRIORITY 0: Hippocampus Direct Recall ──────────────────────
+	// If we have a stored memory matching this query, USE IT directly.
+	// Memory recall > generation. A human remembers facts before "generating" them.
+	if responseText == "" && memoryUsed && memoryText != "" && !sameText(memoryText, input) {
+		// Extract the answer part from "question | answer" format
+		answer := extractAnswerFromContext(memoryText)
+		if answer != "" && !sameText(answer, input) {
+			responseText = answer
+		}
+	}
+
 	// Priority 1: Broca 1.0 — FractalCortex autoregressive (SDR-based)
 	// Generate a response autoregressively through FractalCortex ternary layers.
 	// If Hippocampus retrieved a memory, inject it as context (RAG-style).
@@ -424,25 +496,50 @@ func (o *Organism) Process(input string) string {
 		contextWords = append(contextWords, understanding.Words...)
 		
 		responseText = o.Broca.GenerateAutoregressive(o.FractalCortex, contextWords, o.Config.MaxGenWords)
-		// NOTE: Do NOT set confidence=255 just because text was generated.
-		// A non-empty output does not mean a correct output. Confidence
-		// should reflect actual quality from Prefrontal/Hippocampus pipeline.
+	}
+
+	// Anti-repetition filter: if any generator produces "word word word word...",
+	// that's a degenerate loop, not a real response. Clear it and try the next.
+	if isRepetitive(responseText) {
+		responseText = ""
+	}
+
+	// Priority 2: RadioCortex autoregressive generation (frequency-based)
+	// Uses SignalCodec to decode bus spectrum into tokens.
+	if responseText == "" && o.RadioCortex != nil && o.SignalCodec != nil && o.RadioCortex.TickCount > 2000 {
+		var tokenIDs []int
+		for _, w := range understanding.Words {
+			if id := o.Vocab.Get(w); id > 0 {
+				tokenIDs = append(tokenIDs, int(id))
+			}
+		}
+		if len(tokenIDs) > 0 {
+			radioText := o.RadioCortex.RadioGenerate(o.SignalCodec, o.Vocab, tokenIDs, o.Config.MaxGenWords, 20)
+			if radioText != "" && !isRepetitive(radioText) {
+				responseText = radioText
+			}
+		}
 	}
 
 	// Fallback to associative / SDR generation if autoregression didn't work or wasn't used
 	if responseText == "" {
-		responseText = o.Broca.Generate(responseSDR, o.Config.MaxGenWords)
+		candidate := o.Broca.Generate(responseSDR, o.Config.MaxGenWords)
+		if !isRepetitive(candidate) {
+			responseText = candidate
+		}
 	}
 
 	if responseText == "" && len(understanding.KeyWords) > 0 {
-		responseText = o.Broca.GenerateFromContext(understanding.KeyWords, o.Config.MaxGenWords)
+		candidate := o.Broca.GenerateFromContext(understanding.KeyWords, o.Config.MaxGenWords)
+		if !isRepetitive(candidate) {
+			responseText = candidate
+		}
 	}
 	if responseText == "" && len(understanding.Words) > 0 {
-		responseText = o.Broca.GenerateFromContext(understanding.Words, o.Config.MaxGenWords)
-	}
-
-	if responseText == "" && memoryUsed && memoryText != "" && !sameText(memoryText, input) {
-		responseText = memoryText
+		candidate := o.Broca.GenerateFromContext(understanding.Words, o.Config.MaxGenWords)
+		if !isRepetitive(candidate) {
+			responseText = candidate
+		}
 	}
 
 	// Don't echo the input back as a response.
@@ -475,6 +572,15 @@ func (o *Organism) Process(input string) string {
 	if responseText != "" {
 		responseTokens := Tokenize(responseText)
 		o.Wernicke.LearnContext(responseTokens)
+	}
+
+	// ── RADIO HEBBIAN: Reinforce/weaken neurons based on response quality. ──
+	if o.RadioCortex != nil {
+		if responseText != "" && responseText != "(no confident response)" && confidence >= o.Config.PrefrontalConfThreshold {
+			o.RadioCortex.Confirm() // Good response → strengthen fired neurons
+		} else {
+			o.RadioCortex.Contradict() // Bad/no response → weaken and re-tune
+		}
 	}
 
 	// ── SELF: Track competence. ──────────────────────────────────
@@ -613,10 +719,67 @@ func (o *Organism) LearnQA(question, answer string) {
 		// Train the cortex using Probabilistic STDP with a moderate learning rate (e.g., 20/255 = ~8% probability)
 		o.FractalCortex.TrainSequence(seqSDRs, 20)
 	}
+
+	// RadioCortex: Train frequency associations (Q → A)
+	// Each answer token becomes a training target: input=question, target=answer_token
+	if o.RadioCortex != nil && o.SignalCodec != nil {
+		// Ensure codec covers current vocab
+		if o.Vocab.Size() > o.SignalCodec.vocabSize {
+			o.SignalCodec.GrowVocab(o.Vocab.Size())
+		}
+
+		// Convert question words to token IDs
+		qTokens := Tokenize(question)
+		var qIDs []int
+		for _, w := range qTokens {
+			if id := o.Vocab.Get(w); id > 0 {
+				qIDs = append(qIDs, int(id))
+			}
+		}
+
+		// Train on each answer token as target
+		aTokens := Tokenize(answer)
+		for _, w := range aTokens {
+			if id := o.Vocab.Get(w); id > 0 {
+				// Train: given question frequencies → produce this answer token's frequencies
+				o.RadioCortex.RadioTrainStep(o.SignalCodec, qIDs, int(id), 20)
+			}
+		}
+	}
 }
 
 func sameText(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// isRepetitive detects degenerate output like "brain brain brain brain...".
+// Returns true if >50% of the words are the same word repeated.
+func isRepetitive(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	words := strings.Fields(text)
+	if len(words) <= 2 {
+		return false // too short to judge
+	}
+
+	// Count word frequencies
+	counts := make(map[string]int, len(words))
+	for _, w := range words {
+		counts[strings.ToLower(w)]++
+	}
+
+	// Find the most frequent word
+	maxCount := 0
+	for _, c := range counts {
+		if c > maxCount {
+			maxCount = c
+		}
+	}
+
+	// If one word is >50% of all words, it's repetitive
+	return float64(maxCount)/float64(len(words)) > 0.5
 }
 
 // extractAnswerFromContext extracts the answer part from a hippocampus
@@ -707,7 +870,15 @@ func (o *Organism) Sleep() []string {
 		}
 	}
 
-	// 8. Meta-learning: queue weak topics for auto-exploration.
+	// 9. RadioCortex: neurogenesis — replace dead neurons with fresh ones.
+	if o.RadioCortex != nil {
+		replaced := o.RadioCortex.Neurogenesis()
+		if replaced > 0 {
+			logs = append(logs, fmt.Sprintf("[RadioCortex] Neurogenesis: replaced %d dead neurons.", replaced))
+		}
+	}
+
+	// 10. Meta-learning: queue weak topics for auto-exploration.
 	autoLearnTopics := o.AutoLearn()
 	for _, topic := range autoLearnTopics {
 		logs = append(logs, fmt.Sprintf("AutoLearn: queued weak topic '%s' for curiosity-driven exploration.", topic))
@@ -810,6 +981,12 @@ type OrganismStats struct {
 	MotorOutputs  uint64 `json:"motor_outputs"`
 	RhythmTick    uint64 `json:"rhythm_tick"`
 
+	// RadioCortex (frequency-based neural processor).
+	RadioNeurons   int    `json:"radio_neurons"`
+	RadioAlive     int    `json:"radio_alive"`
+	RadioAvgAmp    int    `json:"radio_avg_amplitude"`
+	RadioTickCount uint64 `json:"radio_tick_count"`
+
 	// Aggregate.
 	TotalSynapticWeight int64 `json:"total_synaptic_weight"`
 }
@@ -870,6 +1047,11 @@ func (o *Organism) Stats() OrganismStats {
 		SensoryInputs: o.Sensory.Stats().TotalInputs,
 		MotorOutputs:  o.Motor.Stats().TotalOutputs,
 		RhythmTick:    o.Rhythm.Stats().GlobalTick,
+
+		RadioNeurons:   func() int { if o.RadioCortex != nil { return o.RadioCortex.Stats().TotalNeurons }; return 0 }(),
+		RadioAlive:     func() int { if o.RadioCortex != nil { return o.RadioCortex.Stats().AliveNeurons }; return 0 }(),
+		RadioAvgAmp:    func() int { if o.RadioCortex != nil { return o.RadioCortex.Stats().AvgAmplitude }; return 0 }(),
+		RadioTickCount: func() uint64 { if o.RadioCortex != nil { return o.RadioCortex.Stats().TickCount }; return 0 }(),
 
 		TotalSynapticWeight: int64(brainStats.AvgWeight) * int64(brainStats.ActiveSynapses) / 256,
 	}
@@ -989,6 +1171,13 @@ func (o *Organism) Save(dataDir string) error {
 	if o.FractalCortex != nil {
 		if err := o.FractalCortex.Save(dataDir); err != nil {
 			return fmt.Errorf("organism save fractal cortex: %w", err)
+		}
+	}
+
+	// 13. RadioCortex neurons + SignalCodec vocab size.
+	if o.RadioCortex != nil {
+		if err := SaveRadioCortexWithCodec(o.RadioCortex, o.SignalCodec, filepath.Join(dataDir, "radio_cortex.nxrc")); err != nil {
+			return fmt.Errorf("organism save radio cortex: %w", err)
 		}
 	}
 
@@ -1139,6 +1328,30 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		fmt.Println("[FractalCortex] Successfully restored BitNet weights from disk.")
 	}
 
+	// 13. RadioCortex — load from disk, fall back to fresh if missing.
+	var radioCortex *RadioCortex
+	var signalCodec *SignalCodec
+	radioPath := filepath.Join(cfg.DataDir, "radio_cortex.nxrc")
+	if _, err := os.Stat(radioPath); err == nil {
+		rc, sc, loadErr := LoadRadioCortex(radioPath)
+		if loadErr != nil {
+			fmt.Printf("[RadioCortex] Load failed (%v), starting fresh.\n", loadErr)
+			radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
+			signalCodec = NewSignalCodec(1000)
+		} else {
+			radioCortex = rc
+			if sc != nil {
+				signalCodec = sc
+			} else {
+				signalCodec = NewSignalCodec(1000)
+			}
+			fmt.Printf("[RadioCortex] Restored %d neurons (tick %d) from disk.\n", rc.Size, rc.TickCount)
+		}
+	} else {
+		radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
+		signalCodec = NewSignalCodec(1000)
+	}
+
 	// 8. Broca 2.0 — Load BPE tokenizer and MiniTransformer (optional)
 	var bpeTokenizer *BPETokenizer
 	var miniTransformer *MiniTransformer
@@ -1188,6 +1401,10 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 
 		// FractalCortex: Infinite growing MoC ALBERT layers
 		FractalCortex: fractalCortex,
+
+		// RadioCortex: frequency-based neural processor (restored or fresh)
+		RadioCortex: radioCortex,
+		SignalCodec: signalCodec,
 
 		// Broca 2.0: Transformer language model (nil if no tokenizer on disk)
 		Transformer: miniTransformer,

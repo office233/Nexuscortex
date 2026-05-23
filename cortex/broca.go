@@ -330,6 +330,10 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 
 	// 2. Autoregressive loop
 	var generated []string
+	recentWords := make(map[string]int) // track word frequency to avoid loops
+	lastWord := ""
+	consecutiveRepeats := 0
+
 	for i := 0; i < maxTokens; i++ {
 		// Decode the current state (which predicts the next token)
 		pattern := make([]bool, currentState.Size)
@@ -338,24 +342,45 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 				pattern[idx] = true
 			}
 		}
-		topK := b.Decoder.DecodeTopK(pattern, currentState.Size, 3)
+		topK := b.Decoder.DecodeTopK(pattern, currentState.Size, 8)
 		if len(topK) == 0 {
 			break
 		}
 		
-		// Pick the most likely word that is not <UNK>
+		// Pick the best word that isn't a loop
 		var nextWord string
 		for _, cand := range topK {
-			if cand.Word != "<UNK>" {
-				nextWord = cand.Word
-				break
+			if cand.Word == "<UNK>" {
+				continue
 			}
+			// Anti-loop: skip words that have been used too many times
+			// or that are the same as the last word
+			if cand.Word == lastWord {
+				continue // never repeat the same word consecutively
+			}
+			if recentWords[cand.Word] >= 2 {
+				continue // don't use any word more than twice total
+			}
+			nextWord = cand.Word
+			break
 		}
 		if nextWord == "" {
-			break
+			break // all candidates are loops, stop
+		}
+
+		// Consecutive repeat detection (even with gaps)
+		if nextWord == lastWord {
+			consecutiveRepeats++
+			if consecutiveRepeats >= 2 {
+				break
+			}
+		} else {
+			consecutiveRepeats = 0
 		}
 
 		generated = append(generated, nextWord)
+		recentWords[nextWord]++
+		lastWord = nextWord
 		
 		// Stop condition: end of sentence
 		if isPunctuation(nextWord) {
