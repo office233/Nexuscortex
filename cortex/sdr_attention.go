@@ -137,7 +137,7 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 	// For single top match, just return its value
 	if len(topItems) == 1 || topItems[0].score == 0 {
 		if topItems[0].score > 0 {
-			return h.Values[topItems[0].idx]
+			return h.Values[topItems[0].idx].Clone()
 		}
 		return result
 	}
@@ -291,8 +291,12 @@ func (m *MultiHeadSDRAttention) ProcessToken(input SDR, topK int) SDR {
 		keyAct := m.KeyProjections[h].Forward(inputActivations)
 
 		// Convert activations back to SDRs
-		querySDR := activationsToSDR(queryAct, 50) // Top-50 active
-		keySDR := activationsToSDR(keyAct, 50)
+		sparsity := input.ActiveCount
+		if sparsity <= 0 {
+			sparsity = 50 // Default SDR sparsity fallback
+		}
+		querySDR := activationsToSDR(queryAct, sparsity)
+		keySDR := activationsToSDR(keyAct, sparsity)
 
 		// Store this token's key and value (value = input SDR in this head's space)
 		m.Heads[h].Store(keySDR, querySDR)

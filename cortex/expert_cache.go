@@ -25,6 +25,9 @@ type ExpertCache struct {
 	order    *list.List                  // LRU order (front = most recent)
 	index    *ShardedModelIndex          // Model index for loading misses
 	
+	// inflight deduplicates concurrent disk reads for the same expert.
+	inflight map[int]chan struct{}
+	
 	// Statistics
 	hits     uint64
 	misses   uint64
@@ -47,6 +50,7 @@ func NewExpertCache(capacity int, index *ShardedModelIndex) *ExpertCache {
 		items:    make(map[int]*list.Element, capacity),
 		order:    list.New(),
 		index:    index,
+		inflight: make(map[int]chan struct{}),
 	}
 }
 
@@ -61,23 +65,41 @@ func (c *ExpertCache) Get(expertID int) (*ExpertShard, bool, error) {
 		c.mu.Unlock()
 		return elem.Value.(*cacheEntry).shard, true, nil
 	}
+
+	// Check if another goroutine is already loading this expert
+	if wait, ok := c.inflight[expertID]; ok {
+		c.mu.Unlock()
+		// Wait for the in-flight load to complete
+		<-wait
+		// Re-check cache — the loading goroutine will have inserted it
+		c.mu.Lock()
+		if elem, ok := c.items[expertID]; ok {
+			c.order.MoveToFront(elem)
+			c.mu.Unlock()
+			return elem.Value.(*cacheEntry).shard, false, nil
+		}
+		c.mu.Unlock()
+		// The in-flight load must have failed; fall through to try again
+		return nil, false, fmt.Errorf("cache miss load expert %d: in-flight load failed", expertID)
+	}
+
+	// Mark this expert as in-flight so concurrent callers wait
+	done := make(chan struct{})
+	c.inflight[expertID] = done
 	c.misses++
 	c.mu.Unlock()
 
 	// Slow path: disk I/O happens WITHOUT holding the lock
 	shard, err := c.index.LoadExpert(expertID)
-	if err != nil {
-		return nil, false, fmt.Errorf("cache miss load expert %d: %w", expertID, err)
-	}
 
-	// Re-acquire and insert, checking for races (another goroutine may have loaded same expert)
+	// Clean up in-flight state and notify waiters
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	delete(c.inflight, expertID)
+	close(done)
 
-	if elem, ok := c.items[expertID]; ok {
-		// Another goroutine loaded this expert while we were reading from disk
-		c.order.MoveToFront(elem)
-		return elem.Value.(*cacheEntry).shard, false, nil
+	if err != nil {
+		c.mu.Unlock()
+		return nil, false, fmt.Errorf("cache miss load expert %d: %w", expertID, err)
 	}
 
 	// Evict if at capacity
@@ -89,6 +111,7 @@ func (c *ExpertCache) Get(expertID int) (*ExpertShard, bool, error) {
 	entry := &cacheEntry{expertID: expertID, shard: shard}
 	elem := c.order.PushFront(entry)
 	c.items[expertID] = elem
+	c.mu.Unlock()
 
 	return shard, false, nil
 }

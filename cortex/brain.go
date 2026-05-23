@@ -50,6 +50,10 @@ const (
 	SynFlagSkipGram   uint8 = 0x08 // Words are 2+ positions apart
 )
 
+// DefaultProceduralSynapseCount is the number of deterministic baseline
+// synapses generated per word in GetProceduralSynapses.
+const DefaultProceduralSynapseCount = 5
+
 // Brain is the word-level self-growing neural network.
 type Brain struct {
 	Vocab     *Vocab
@@ -94,7 +98,7 @@ func (b *Brain) GetProceduralSynapses(sourceID uint32) []Synapse {
 	}
 
 	seed := uint64(sourceID)
-	numSynapses := 5
+	numSynapses := DefaultProceduralSynapseCount
 	syns := make([]Synapse, 0, numSynapses)
 
 	for i := 0; i < numSynapses; i++ {

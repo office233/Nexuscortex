@@ -309,7 +309,10 @@ func (n *Network) Tick(externalInputs []uint8) []bool {
 	}
 
 	// ── Columnar Activations & Dominance ─────────────────────────
-	colSize := 100
+	colSize := n.Config.WtaColumnSize
+	if colSize <= 0 {
+		colSize = 100
+	}
 	numCols := (size + colSize - 1) / colSize
 	if len(n.ColSpikeTraces) != numCols {
 		n.ColSpikeTraces = make([]uint32, numCols)
@@ -393,10 +396,18 @@ func (n *Network) Tick(externalInputs []uint8) []bool {
 	}
 
 	// ── WTA Lateral Columnar Inhibition ──────────────────────────
-	if maxCol != -1 && maxTrace > 50 {
+	wtaMinTrace := n.Config.WtaActivationThresh
+	if wtaMinTrace == 0 {
+		wtaMinTrace = 50
+	}
+	wtaMaxInhib := n.Config.WtaMaxInhibition
+	if wtaMaxInhib == 0 {
+		wtaMaxInhib = 100
+	}
+	if maxCol != -1 && maxTrace > wtaMinTrace {
 		inhibition := uint16(maxTrace / 32)
-		if inhibition > 100 {
-			inhibition = 100
+		if inhibition > wtaMaxInhib {
+			inhibition = wtaMaxInhib
 		}
 		for i := 0; i < size; i++ {
 			c := i / colSize
@@ -413,7 +424,10 @@ func (n *Network) Tick(externalInputs []uint8) []bool {
 	// ── Metacognitive Dampening ──────────────────────────────────
 	if n.MetacognitiveDampening > 0 {
 		n.MetacognitiveDampening--
-		bias := uint16(15)
+		bias := n.Config.NoradrenergicDampeningBias
+		if bias == 0 {
+			bias = 15
+		}
 		for i := 0; i < size; i++ {
 			if n.tickInputCurrents[i] >= bias {
 				n.tickInputCurrents[i] -= bias
@@ -816,10 +830,11 @@ func (n *Network) Save(path string) error {
 	// Write neurons as RGBA32 pixels (4 bytes each).
 	for i := 0; i < size; i++ {
 		neuron := n.Neurons.GetNeuron(i)
-		if neuron == nil {
-			continue
+		var packed uint32
+		if neuron != nil {
+			packed = neuron.PackRGBA32()
 		}
-		packed := neuron.PackRGBA32()
+		// Write zero for nil neurons to maintain binary format alignment.
 		if err := binary.Write(f, binary.LittleEndian, packed); err != nil {
 			return fmt.Errorf("write neuron %d: %w", i, err)
 		}
@@ -849,7 +864,10 @@ func (n *Network) Save(path string) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("sync network file: %w", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close network file: %w", err)
+	}
 
 	// Atomic rename: old file is only replaced after new data is fully written.
 	if err := os.Rename(tmpPath, path); err != nil {

@@ -19,6 +19,11 @@ import (
 	"time"
 )
 
+// defaultAllowedDomains is the single source of truth for the default SSRF
+// domain allowlist. Referenced by NewWebLearnerFromConfig, isAllowedURL, and
+// IsAllowedURL to avoid maintenance drift across three call sites.
+var defaultAllowedDomains = []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
+
 // WebLearner searches the web and converts discoveries into training data.
 type WebLearner struct {
 	Client    *http.Client
@@ -77,7 +82,7 @@ func NewWebLearnerFromConfig(cfg Config) *WebLearner {
 
 	allowedDomains := cfg.WebLearnerAllowedDomains
 	if len(allowedDomains) == 0 {
-		allowedDomains = []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
+		allowedDomains = defaultAllowedDomains
 	}
 
 	wl := &WebLearner{
@@ -126,17 +131,26 @@ func (wl *WebLearner) throttle() {
 
 // isAllowedURL is the package-level compatibility wrapper (uses default allowlist).
 func isAllowedURL(targetURL string) bool {
-	defaultDomains := []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
-	return checkAllowedURL(targetURL, defaultDomains)
+	return checkAllowedURL(targetURL, defaultAllowedDomains)
 }
 
 // IsAllowedURL checks if a URL is in the WebLearner's configured allowlist.
 func (wl *WebLearner) IsAllowedURL(targetURL string) bool {
 	domains := wl.AllowedDomains
 	if len(domains) == 0 {
-		domains = []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
+		domains = defaultAllowedDomains
 	}
 	return checkAllowedURL(targetURL, domains)
+}
+
+// Do is a defense-in-depth wrapper around wl.Client.Do that validates the
+// request URL against the allowlist BEFORE issuing the request. This ensures
+// SSRF protection on initial requests, not just redirects.
+func (wl *WebLearner) Do(req *http.Request) (*http.Response, error) {
+	if !wl.IsAllowedURL(req.URL.String()) {
+		return nil, fmt.Errorf("SSRF prevention: blocked request to %s", req.URL.String())
+	}
+	return wl.Client.Do(req)
 }
 
 // checkAllowedURL checks if a URL's host is in the given domain allowlist.
@@ -188,7 +202,7 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 	}
 	req.Header.Set("User-Agent", wl.UserAgent)
 
-	resp, err := wl.Client.Do(req)
+	resp, err := wl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("wikipedia search failed: %w", err)
 	}
@@ -250,7 +264,7 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 	}
 	req.Header.Set("User-Agent", wl.UserAgent)
 
-	resp, err := wl.Client.Do(req)
+	resp, err := wl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("wikipedia summary failed: %w", err)
 	}
@@ -345,7 +359,7 @@ func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchR
 	}
 	req.Header.Set("User-Agent", wl.UserAgent)
 
-	resp, err := wl.Client.Do(req)
+	resp, err := wl.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("huggingface search failed: %w", err)
 	}
@@ -412,7 +426,7 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 	}
 	req.Header.Set("User-Agent", wl.UserAgent)
 
-	resp, err := wl.Client.Do(req)
+	resp, err := wl.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("huggingface rows fetch failed: %w", err)
 	}

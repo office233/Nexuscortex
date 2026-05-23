@@ -142,9 +142,17 @@ func (e *EmotionEngine) Update(reward int8, predictionError uint8, interactionCo
 		targetCuriosity = uint8(255 - uint16(dist)*128/uint16(sweetHalfSpan))
 	default:
 		// Overwhelming — curiosity crashes.
+		// All arithmetic stays in uint16 to avoid uint8 overflow when sweetHigh >= 196.
 		overBase := uint16(sweetHigh) + 1
-		if predictionError < uint8(overBase+60) {
-			targetCuriosity = uint8(60 - uint16(predictionError-uint8(overBase))*60/60)
+		if uint16(predictionError) < overBase+60 {
+			val := int(60) - int(uint16(predictionError)-overBase)*60/60
+			if val < 0 {
+				val = 0
+			}
+			if val > 255 {
+				val = 255
+			}
+			targetCuriosity = uint8(val)
 		}
 		// else: 0 (already zero-initialized)
 	}
@@ -382,6 +390,7 @@ type emotionSaveData struct {
 }
 
 // Save persists the EmotionEngine state to a JSON file.
+// Uses atomic temp-file → sync → rename pattern to prevent corruption.
 func (e *EmotionEngine) Save(path string) error {
 	data := emotionSaveData{
 		State:            e.State,
@@ -399,8 +408,27 @@ func (e *EmotionEngine) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("emotion save marshal: %w", err)
 	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("emotion save create: %w", err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("emotion save write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("emotion save sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("emotion save close: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("emotion save rename: %w", err)
 	}
 	return nil
 }
@@ -423,12 +451,18 @@ func LoadEmotionEngine(path string, cfg Config) (*EmotionEngine, error) {
 	if data.History == nil {
 		data.History = make([]EmotionalState, 0)
 	}
+	// Use config values for MomentumDecay and MaxHistory instead of stale disk values.
+	// A zero/corrupted MaxHistory from disk would cause panic (index out of range).
+	maxHistory := cfg.EmotionHistoryCapacity
+	if maxHistory < 1 {
+		maxHistory = 1
+	}
 	return &EmotionEngine{
 		State:            data.State,
 		PreviousState:    data.PreviousState,
-		MomentumDecay:    data.MomentumDecay,
+		MomentumDecay:    cfg.EmotionMomentumDecay,
 		History:          data.History,
-		MaxHistory:       data.MaxHistory,
+		MaxHistory:       maxHistory,
 		ValenceWeight:    cfg.EmotionValenceWeight,
 		ArousalWeight:    cfg.EmotionArousalWeight,
 		CuriosityWeight:  cfg.EmotionCuriosityWeight,

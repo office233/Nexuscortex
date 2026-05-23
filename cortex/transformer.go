@@ -34,15 +34,10 @@ type TransformerConfig struct {
 const DefaultEOSTokenID = 3
 
 // DefaultTransformerConfig returns a small but functional config (~13M params).
+// Delegates to TransformerConfigFromConfig using DefaultConfig() to avoid
+// duplicated hardcoded values.
 func DefaultTransformerConfig(vocabSize int) TransformerConfig {
-	return TransformerConfig{
-		VocabSize:  vocabSize,
-		EmbedDim:   256,
-		NumHeads:   4,
-		NumLayers:  4,
-		FFNDim:     1024,
-		MaxSeqLen:  512,
-	}
+	return TransformerConfigFromConfig(vocabSize, DefaultConfig())
 }
 
 // TransformerConfigFromConfig creates a TransformerConfig using values from the
@@ -55,6 +50,7 @@ func TransformerConfigFromConfig(vocabSize int, cfg Config) TransformerConfig {
 		NumLayers:  cfg.TransformerNumLayers,
 		FFNDim:     cfg.TransformerFFNDim,
 		MaxSeqLen:  cfg.TransformerMaxSeqLen,
+		EOSTokenID: DefaultEOSTokenID,
 	}
 }
 

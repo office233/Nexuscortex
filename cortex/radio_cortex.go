@@ -207,7 +207,7 @@ func (rc *RadioCortex) InjectSDR(sdr SDR) {
 	indices := sdr.ActiveIndices()
 	for _, idx := range indices {
 		freq := uint8(idx % 256)
-		rc.Bus.Emit(freq, 200, uint8(idx%256), false)
+		rc.Bus.Emit(freq, uint8(rc.TrainAmplitude), uint8(idx%256), false)
 	}
 	// Also activate matching input neurons
 	for i := rc.InputStart; i < rc.InputEnd; i++ {
@@ -215,7 +215,7 @@ func (rc *RadioCortex) InjectSDR(sdr SDR) {
 		signal, busPhase := rc.Bus.Read(n.FreqListen())
 		if signal > 0 {
 			resonance := Resonance(n.Phase(), busPhase)
-			if resonance > 32 { // reasonable match
+			if resonance > int8(rc.ResonanceThreshold) { // configurable match threshold
 				rc.Fired[i] = true
 			}
 		}
@@ -232,10 +232,14 @@ func (rc *RadioCortex) ReadFiringPattern() []bool {
 // ReadOutputSDR reads the output region's firing pattern as an SDR.
 func (rc *RadioCortex) ReadOutputSDR(sdrSize int) SDR {
 	sdr := NewSDR(sdrSize)
+	outputSpan := rc.OutputEnd - rc.OutputStart
+	if outputSpan == 0 {
+		return sdr
+	}
 	for i := rc.OutputStart; i < rc.OutputEnd; i++ {
 		if rc.Fired[i] {
 			// Map output neuron index to SDR bit position
-			bitIdx := (i - rc.OutputStart) * sdrSize / (rc.OutputEnd - rc.OutputStart)
+			bitIdx := (i - rc.OutputStart) * sdrSize / outputSpan
 			if bitIdx >= 0 && bitIdx < sdrSize {
 				sdr.Set(bitIdx)
 			}
@@ -272,7 +276,7 @@ func (rc *RadioCortex) Contradict() {
 			n.SetAmplitude(amp - 1)
 		}
 		// Weak neurons re-tune: drift frequency by ±1
-		if amp < 32 {
+		if amp < uint8(rc.WeakNeuronThreshold) {
 			freq := n.FreqListen()
 			if rc.rng.Intn(2) == 0 {
 				n.SetFreqListen(freq + 1) // wraps via uint8

@@ -80,8 +80,11 @@ func main() {
 	})
 
 	// Final save
-	org.Save(cfg.DataDir)
+	if err := org.Save(cfg.DataDir); err != nil {
+		fmt.Printf("⚠️  Final save failed: %v\n", err)
+	} else {
+		fmt.Println("💾 Final save complete. Goodbye! 🧠")
+	}
 	fmt.Println()
 	fmt.Println(learner.Stats())
-	fmt.Println("💾 Final save complete. Goodbye! 🧠")
 }

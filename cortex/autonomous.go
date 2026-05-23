@@ -177,8 +177,11 @@ func (al *AutonomousLearner) Run(ctx context.Context, logFn func(string)) {
 			
 			// Save organism periodically
 			if al.CycleCount%5 == 0 {
-				al.Organism.Save(al.Organism.Config.DataDir)
-				logFn("💾 Organism saved to disk.")
+				if err := al.Organism.Save(al.Organism.Config.DataDir); err != nil {
+					logFn(fmt.Sprintf("⚠️  Save failed: %v", err))
+				} else {
+					logFn("💾 Organism saved to disk.")
+				}
 			}
 
 			// Wait before next cycle

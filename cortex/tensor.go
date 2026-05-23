@@ -311,6 +311,9 @@ func (t *Tensor) Softmax() *Tensor {
 }
 
 func softmaxRow(data []float32) {
+	if len(data) == 0 {
+		return
+	}
 	// Numerical stability: subtract max
 	maxVal := data[0]
 	for _, v := range data[1:] {

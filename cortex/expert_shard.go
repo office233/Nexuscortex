@@ -19,6 +19,7 @@ package cortex
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 )
@@ -151,6 +152,8 @@ const expertHeaderSize = 4 + 4 + 4 + 8 + 1 + 7 // 28 bytes
 type ExpertShard struct {
 	Header     ExpertShardHeader
 	Layer      *TernaryLayer
+	// Confidence is populated by external codebook compression tooling,
+	// not during shard creation or loading. Nil during normal operation.
 	Confidence *ConfidenceLayer // nil if not available
 	SizeBytes  int64           // Total size on disk
 }
@@ -377,7 +380,7 @@ func (idx *ShardedModelIndex) LoadExpert(expertID int) (*ExpertShard, error) {
 		return nil, fmt.Errorf("expert %d has no tile data", expertID)
 	}
 	data := make([]byte, dataSize)
-	if _, err := f.Read(data); err != nil {
+	if _, err := io.ReadFull(f, data); err != nil {
 		return nil, fmt.Errorf("read expert %d tiles: %w", expertID, err)
 	}
 

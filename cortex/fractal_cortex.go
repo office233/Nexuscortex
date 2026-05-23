@@ -516,6 +516,10 @@ func (fc *FractalCortex) Load(dataDir string) error {
 		if contextLen <= 0 {
 			contextLen = fc.Config.FractalContextLen
 		}
+		const MaxFractalContextLen = 100_000
+		if contextLen > MaxFractalContextLen {
+			return fmt.Errorf("invalid context_len: %d (max %d)", contextLen, MaxFractalContextLen)
+		}
 		decayRate := uint8(meta.DecayRate)
 		if meta.DecayRate <= 0 {
 			decayRate = uint8(fc.Config.FractalDecayRate)

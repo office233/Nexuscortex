@@ -20,15 +20,15 @@ package cortex
 // Prediction error is encoded as uint8: 0 = perfect prediction,
 // 255 = maximum surprise (zero overlap).
 
-// PredictorWindowSize is the number of recent SDRs to retain.
-const PredictorWindowSize = 5
+// DefaultPredictorWindowSize is the number of recent SDRs to retain.
+const DefaultPredictorWindowSize = 5
 
-// PredictorUnionDepth is how many recent SDRs to union for prediction.
-// Must be <= PredictorWindowSize.
-const PredictorUnionDepth = 3
+// DefaultPredictorUnionDepth is how many recent SDRs to union for prediction.
+// Must be <= DefaultPredictorWindowSize.
+const DefaultPredictorUnionDepth = 3
 
-// PredictorMaxHistory is the maximum error history entries retained.
-const PredictorMaxHistory = 100
+// DefaultPredictorMaxHistory is the maximum error history entries retained.
+const DefaultPredictorMaxHistory = 100
 
 // Predictor generates predictions from recent input history and
 // tracks prediction error over time as a surprise signal.
@@ -45,8 +45,8 @@ type Predictor struct {
 // The rng parameter is accepted for API compatibility but is unused.
 func NewPredictor(_ interface{}) *Predictor {
 	return &Predictor{
-		Window:       make([]SDR, 0, PredictorWindowSize),
-		ErrorHistory: make([]uint8, 0, PredictorMaxHistory),
+		Window:       make([]SDR, 0, DefaultPredictorWindowSize),
+		ErrorHistory: make([]uint8, 0, DefaultPredictorMaxHistory),
 	}
 }
 
@@ -60,15 +60,15 @@ func NewPredictor(_ interface{}) *Predictor {
 // so Compare works correctly.
 func (p *Predictor) Predict(currentInput SDR) SDR {
 	// Append to sliding window (ring buffer to avoid backing array leak).
-	if len(p.Window) >= PredictorWindowSize {
+	if len(p.Window) >= DefaultPredictorWindowSize {
 		copy(p.Window, p.Window[1:])
 		p.Window[len(p.Window)-1] = currentInput
 	} else {
 		p.Window = append(p.Window, currentInput)
 	}
 
-	// Union the last PredictorUnionDepth entries for temporal prediction.
-	depth := PredictorUnionDepth
+	// Union the last DefaultPredictorUnionDepth entries for temporal prediction.
+	depth := DefaultPredictorUnionDepth
 	if depth > len(p.Window) {
 		depth = len(p.Window)
 	}
@@ -127,7 +127,7 @@ func (p *Predictor) Update(reality SDR) uint8 {
 	p.PredictionError = p.Compare(p.LastPrediction, reality)
 
 	// Append to error history (ring buffer to avoid backing array leak).
-	if len(p.ErrorHistory) >= PredictorMaxHistory {
+	if len(p.ErrorHistory) >= DefaultPredictorMaxHistory {
 		copy(p.ErrorHistory, p.ErrorHistory[1:])
 		p.ErrorHistory[len(p.ErrorHistory)-1] = p.PredictionError
 	} else {

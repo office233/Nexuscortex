@@ -227,6 +227,13 @@ func LoadRadioCortex(path string) (*RadioCortex, *SignalCodec, error) {
 		OutputEnd:     outputEnd,
 		FireThreshold: fireThreshold,
 		PhaseWindow:   phaseWindow,
+		// Defaults matching NewRadioCortex so standalone callers work
+		TrainAmplitude:      200,
+		ResonanceThreshold:  20,
+		WeakNeuronThreshold: 32,
+		GenerateWindowSize:  8,
+		AntiLoopMaxRepeat:   2,
+		DecodeTopK:          5,
 		rng:           rand.New(rand.NewSource(int64(tickCount))),
 	}
 

@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+// DefaultCorpusFiles is the canonical list of corpus JSONL filenames
+// used by both SelfEvolve and InitBroca2. Single source of truth.
+var DefaultCorpusFiles = []string{
+	"general.jsonl", "reasoning.jsonl",
+	"wikipedia_ro.jsonl", "alpaca.jsonl", "dolly.jsonl",
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Self-Training — Continuous Evolution Engine
 // ─────────────────────────────────────────────────────────────────────
@@ -197,7 +204,7 @@ func (o *Organism) SelfEvolve() (memoriesTrainedOn int, corpusTrainedOn int, avg
 
 	// Phase 2: Train on corpus batch (if available)
 	corpusDir := filepath.Join(o.Config.DataDir, "corpus")
-	corpusFiles := []string{"general.jsonl", "reasoning.jsonl", "alpaca.jsonl"}
+	corpusFiles := DefaultCorpusFiles
 
 	for _, cf := range corpusFiles {
 		corpusPath := filepath.Join(corpusDir, cf)
@@ -232,10 +239,7 @@ func (o *Organism) InitBroca2(vocabSize int) error {
 
 	// Collect training text from all JSONL files
 	var lines []string
-	corpusFiles := []string{
-		"general.jsonl", "reasoning.jsonl",
-		"wikipedia_ro.jsonl", "alpaca.jsonl", "dolly.jsonl",
-	}
+	corpusFiles := DefaultCorpusFiles
 
 	for _, cf := range corpusFiles {
 		path := filepath.Join(corpusDir, cf)

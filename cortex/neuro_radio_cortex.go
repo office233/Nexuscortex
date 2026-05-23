@@ -4,6 +4,20 @@ import (
 	"math/rand"
 )
 
+// Training threshold constants for NeuroRadioCortex.TrainStep.
+// These control fundamental Hebbian learning behavior.
+const (
+	// nrcTrainDeadThreshold: tiles below this amplitude are considered
+	// effectively dead and skipped during training.
+	nrcTrainDeadThreshold = 10
+	// nrcTrainContradictThreshold: non-relevant tiles below this amplitude
+	// are contradicted (weakened) during training.
+	nrcTrainContradictThreshold = 50
+	// nrcTrainDriftThreshold: contradicted tiles below this amplitude
+	// have their listen frequency drifted toward a target frequency.
+	nrcTrainDriftThreshold = 20
+)
+
 // ═══════════════════════════════════════════════════════════════════
 // NeuroRadioCortex — The Full Unified Cortex
 // ═══════════════════════════════════════════════════════════════════
@@ -361,7 +375,7 @@ func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, t
 		lf := tile.ListenFreq()
 		amp := tile.Amplitude()
 
-		if amp < 10 {
+		if amp < nrcTrainDeadThreshold {
 			continue // Dead tile, skip
 		}
 
@@ -370,11 +384,11 @@ func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, t
 		if isRelevant && amp > 0 {
 			tile.Confirm()
 			matches++
-		} else if !isRelevant && amp < 50 {
+		} else if !isRelevant && amp < nrcTrainContradictThreshold {
 			tile.Contradict()
 
 			// Drift weak tiles toward target frequencies
-			if amp < 20 && len(targetFreqs) > 0 {
+			if amp < nrcTrainDriftThreshold && len(targetFreqs) > 0 {
 				newFreq := targetFreqs[nrc.rng.Intn(len(targetFreqs))]
 				tile.Radio.SetFreqListen(newFreq)
 			}

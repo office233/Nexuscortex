@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// RadioCortex training period thresholds — minimum tick counts before
+// the RadioCortex output is trusted for blending or generation.
+const (
+	RadioBlendMinTicks    uint64 = 1000 // Min ticks before blending Radio output into SDR
+	RadioGenerateMinTicks uint64 = 2000 // Min ticks before autoregressive Radio generation
+)
+
 // ─────────────────────────────────────────────────────────────────────
 // organism.go — The Living Organism
 // ─────────────────────────────────────────────────────────────────────
@@ -446,7 +453,7 @@ func (o *Organism) Process(input string) string {
 				}
 
 				// After training period, blend Radio output
-				if o.RadioCortex.TickCount > 1000 && confidence < o.Config.PrefrontalConfThreshold {
+				if o.RadioCortex.TickCount > RadioBlendMinTicks && confidence < o.Config.PrefrontalConfThreshold {
 					radioSDR := o.RadioCortex.ReadOutputSDR(combinedSDR.Size)
 					if radioSDR.ActiveCount > 5 {
 						filtered := responseSDR.Intersect(radioSDR)
@@ -532,7 +539,7 @@ func (o *Organism) Process(input string) string {
 
 	// Priority 2: RadioCortex autoregressive generation (frequency-based)
 	// Uses SignalCodec to decode bus spectrum into tokens.
-	if responseText == "" && o.RadioCortex != nil && o.SignalCodec != nil && o.RadioCortex.TickCount > 2000 {
+	if responseText == "" && o.RadioCortex != nil && o.SignalCodec != nil && o.RadioCortex.TickCount > RadioGenerateMinTicks {
 		var tokenIDs []int
 		for _, w := range understanding.Words {
 			if id := o.Vocab.Get(w); id > 0 {
@@ -1256,9 +1263,9 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 
 	// 5.5. Semantic memory generalization state — non-fatal fallback if missing.
 	semPath := filepath.Join(cfg.DataDir, "semantic.json")
-	semanticMemory, err := LoadSemanticMemory(semPath, cfg.SDRSize)
+	semanticMemory, err := LoadSemanticMemory(semPath, cfg.SDRSize, cfg)
 	if err != nil {
-		semanticMemory = NewSemanticMemory(cfg.SDRSize)
+		semanticMemory = NewSemanticMemory(cfg.SDRSize, cfg)
 	}
 
 	// 6. Prefrontal network.

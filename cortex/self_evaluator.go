@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// Default limits for SelfEvaluator — extracted as named constants.
+const (
+	DefaultSelfEvaluatorMaxTests         = 500 // Maximum test bank size
+	DefaultSelfEvaluatorMaxEvalPerCycle  = 50  // Max tests evaluated per cycle
+)
+
 // SelfEvaluator tests the organism's knowledge and tracks progress.
 type SelfEvaluator struct {
 	TestBank     []SelfTest   // Pool of self-generated tests
@@ -38,7 +44,7 @@ type ScorePoint struct {
 // NewSelfEvaluator creates a new evaluator.
 func NewSelfEvaluator() *SelfEvaluator {
 	return &SelfEvaluator{
-		MaxTests: 500,
+		MaxTests: DefaultSelfEvaluatorMaxTests,
 	}
 }
 
@@ -87,7 +93,7 @@ func (se *SelfEvaluator) Evaluate(org *Organism) ScorePoint {
 
 	correct := 0
 	// Test a subset to avoid slowness (max 50 per eval)
-	maxEval := 50
+	maxEval := DefaultSelfEvaluatorMaxEvalPerCycle
 	if len(se.TestBank) < maxEval {
 		maxEval = len(se.TestBank)
 	}

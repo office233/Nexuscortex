@@ -194,16 +194,18 @@ type conceptJSON struct {
 }
 
 type semanticMemoryJSON struct {
-	Concepts []conceptJSON `json:"concepts"`
-	SDRSize  int           `json:"sdr_size"`
+	Concepts     []conceptJSON `json:"concepts"`
+	SDRSize      int           `json:"sdr_size"`
+	SimThreshold uint8         `json:"sim_threshold,omitempty"` // Persisted since v2
 }
 
 // Save serializes the semantic memory concepts to a JSON file.
 // Prototype SDRs are stored as space-efficient active indices arrays.
 func (sm *SemanticMemory) Save(path string) error {
 	aux := semanticMemoryJSON{
-		Concepts: make([]conceptJSON, len(sm.Concepts)),
-		SDRSize:  sm.SDRSize,
+		Concepts:     make([]conceptJSON, len(sm.Concepts)),
+		SDRSize:      sm.SDRSize,
+		SimThreshold: sm.SimThreshold,
 	}
 
 	for i, c := range sm.Concepts {
@@ -227,7 +229,9 @@ func (sm *SemanticMemory) Save(path string) error {
 }
 
 // LoadSemanticMemory restores a semantic memory instance from a JSON file.
-func LoadSemanticMemory(path string, sdrSize int) (*SemanticMemory, error) {
+// Accepts optional Config to restore SimThreshold from configuration
+// (matching the NewSemanticMemory pattern).
+func LoadSemanticMemory(path string, sdrSize int, cfgs ...Config) (*SemanticMemory, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("semantic memory read: %w", err)
@@ -251,9 +255,16 @@ func LoadSemanticMemory(path string, sdrSize int) (*SemanticMemory, error) {
 		return nil, fmt.Errorf("semantic memory too many concepts: %d (max %d)", len(aux.Concepts), maxSemanticConcepts)
 	}
 
+	// Restore SimThreshold: prefer persisted value, fall back to Config, then default 80.
+	simThresh := aux.SimThreshold
+	if simThresh == 0 && len(cfgs) > 0 && cfgs[0].SemanticMemorySimThreshold > 0 {
+		simThresh = cfgs[0].SemanticMemorySimThreshold
+	}
+
 	sm := &SemanticMemory{
-		Concepts: make([]Concept, len(aux.Concepts)),
-		SDRSize:  aux.SDRSize,
+		Concepts:     make([]Concept, len(aux.Concepts)),
+		SDRSize:      aux.SDRSize,
+		SimThreshold: simThresh,
 	}
 
 	if sm.SDRSize <= 0 {
