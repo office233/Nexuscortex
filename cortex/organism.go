@@ -81,6 +81,10 @@ type Organism struct {
 	RadioCortex *RadioCortex
 	SignalCodec *SignalCodec // Token ↔ frequency mapping
 
+	// NeuroRadioCortex — unified architecture: TernaryTile weights + RadioMeta routing.
+	// Enabled via config flag. Combines content (what to compute) with routing (who to talk to).
+	NeuroRadio *NeuroRadioCortex
+
 	// Broca 2.0 — transformer-based language model (optional).
 	// When both are non-nil, Broca uses the transformer for generation.
 	// When nil, falls back to Broca 1.0 (associative chain walker).
@@ -138,7 +142,7 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		engine = compute.NewCPUEngine()
 	}
 
-	return &Organism{
+	org := &Organism{
 		Config:  cfg,
 		Vocab:   vocab,
 		Encoder: encoder,
@@ -179,6 +183,15 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 
 		Rng: rng,
 	}
+
+	// Initialize NeuroRadioCortex if enabled
+	if cfg.NeuroRadioEnabled {
+		org.NeuroRadio = NewNeuroRadioCortex(cfg.RadioNeuronCount, rng)
+		fmt.Printf("[NeuroRadio] Initialized: %d tiles (%.1f MB)\n",
+			cfg.RadioNeuronCount, float64(cfg.RadioNeuronCount*12)/(1024*1024))
+	}
+
+	return org
 }
 
 // ─────────────────────────────────────────────────────────────────────

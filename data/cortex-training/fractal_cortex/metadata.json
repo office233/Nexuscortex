@@ -1,0 +1,6 @@
+{
+  "blocks_count": 1,
+  "num_layers": 24,
+  "dim": 10000,
+  "top_k": 3
+}

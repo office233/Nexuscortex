@@ -1,0 +1,19 @@
+{
+  "exploration_rate": 25,
+  "interest_map": {
+    "": 0,
+    "ce": 10,
+    "cum": 0,
+    "how": 0,
+    "is": 0,
+    "unde": 10,
+    "what": 25
+  },
+  "bored_threshold": 40,
+  "overwhelm_thresh": 200,
+  "interest_increment": 10,
+  "interest_decay": 5,
+  "rate_step": 10,
+  "recent_errors": "/1WtzMHu98LA8qXZ/dDj9Q==",
+  "max_error_history": 500
+}
