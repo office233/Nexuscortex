@@ -172,7 +172,11 @@ func (e *Encoder) EncodeSentence(text string) SDR {
 	combined := NewSDR(e.sdrSize)
 
 	// Shift amount per token position (e.g., 10000 / 50 = 200 positions)
-	shiftAmount := e.sdrSize / 50
+	actCount := e.activeCount
+	if actCount == 0 {
+		actCount = 50
+	}
+	shiftAmount := e.sdrSize / actCount
 	if shiftAmount == 0 {
 		shiftAmount = 1
 	}
@@ -214,6 +218,7 @@ type sdrRecord struct {
 }
 
 // Save writes the encoder's learned SDR mappings to a JSON file.
+// Uses atomic temp-file + sync + rename to prevent corruption on crash.
 func (e *Encoder) Save(path string) error {
 	ed := encoderData{
 		SDRSize:     e.sdrSize,
@@ -233,12 +238,29 @@ func (e *Encoder) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal encoder: %w", err)
 	}
-	return os.WriteFile(path, data, 0600)
+
+	tmpPath := path + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("encoder create tmp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("encoder write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("encoder sync: %w", err)
+	}
+	f.Close()
+	return os.Rename(tmpPath, path)
 }
 
 // LoadEncoder reads a saved encoder from disk and reconnects it to
 // the provided vocabulary.
-func LoadEncoder(path string, vocab *Vocab, rng *rand.Rand) (*Encoder, error) {
+func LoadEncoder(path string, vocab *Vocab, rng *rand.Rand, cfgs ...Config) (*Encoder, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read encoder: %w", err)
@@ -249,7 +271,7 @@ func LoadEncoder(path string, vocab *Vocab, rng *rand.Rand) (*Encoder, error) {
 		return nil, fmt.Errorf("unmarshal encoder: %w", err)
 	}
 
-	enc := NewEncoder(vocab, ed.SDRSize, ed.ActiveCount, rng)
+	enc := NewEncoder(vocab, ed.SDRSize, ed.ActiveCount, rng, cfgs...)
 	for id, rec := range ed.WordSDRs {
 		enc.wordSDRs[id] = UnpackBytes(rec.Data, rec.Size)
 	}

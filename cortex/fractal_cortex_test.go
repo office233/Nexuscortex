@@ -64,8 +64,8 @@ func TestFractalCortexQuantumRouterCreation(t *testing.T) {
 	if fc.Journal == nil {
 		t.Fatal("expected Journal to be non-nil when EnableQuantumInspired=true")
 	}
-	if fc.QRouter.TopK != 2 {
-		t.Errorf("expected QRouter.TopK=2, got %d", fc.QRouter.TopK)
+	if fc.QRouter.TopK != cfg.FractalTopK {
+		t.Errorf("expected QRouter.TopK=%d (from Config.FractalTopK), got %d", cfg.FractalTopK, fc.QRouter.TopK)
 	}
 	if fc.QRouter.SDRSize != cfg.SDRSize {
 		t.Errorf("expected QRouter.SDRSize=%d, got %d", cfg.SDRSize, fc.QRouter.SDRSize)

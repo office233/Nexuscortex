@@ -1249,14 +1249,10 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 
 	// 5. Hippocampus.
 	hipPath := filepath.Join(cfg.DataDir, "hippocampus.nxhip")
-	hippocampus, err := LoadHippocampus(hipPath)
+	hippocampus, err := LoadHippocampus(hipPath, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("organism load hippocampus: %w", err)
 	}
-	hippocampus.MaxMemories = cfg.MaxMemories
-	hippocampus.ReconsolidationThresh = cfg.HippoReconsolidationThresh
-	hippocampus.InitialStrength = cfg.HippoInitialStrength
-	hippocampus.LtpThreshold = cfg.HippoLtpThreshold
 
 	// 5.5. Semantic memory generalization state — non-fatal fallback if missing.
 	semPath := filepath.Join(cfg.DataDir, "semantic.json")
@@ -1313,14 +1309,13 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 
 	// 10. Self (competence tracking) — fall back to fresh if missing.
 	selfPath := filepath.Join(cfg.DataDir, "self.json")
-	self, err := LoadSelfModel(selfPath)
+	self, err := LoadSelfModel(selfPath, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("organism load self: %w", err)
 	}
 	if self == nil {
 		self = NewSelfModel(cfg)
 	}
-	self.Cfg = cfg
 
 	// 11. Curiosity (exploration state) — fall back to fresh if missing.
 	curiosityPath := filepath.Join(cfg.DataDir, "curiosity.json")
@@ -1403,6 +1398,25 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		} else {
 			neuroRadio = NewNeuroRadioCortex(cfg.RadioNeuronCount, rng)
 		}
+	}
+
+	// Apply config fields to RadioCortex (matches NewOrganism behavior)
+	if radioCortex != nil {
+		radioCortex.TrainAmplitude = cfg.RadioTrainAmplitude
+		radioCortex.ResonanceThreshold = cfg.RadioResonanceThreshold
+		radioCortex.WeakNeuronThreshold = cfg.RadioWeakNeuronThreshold
+		radioCortex.GenerateWindowSize = cfg.RadioGenerateWindowSize
+		radioCortex.AntiLoopMaxRepeat = cfg.RadioAntiLoopMaxRepeat
+		radioCortex.DecodeTopK = cfg.RadioDecodeTopK
+	}
+
+	// Apply config fields to NeuroRadioCortex (matches NewOrganism behavior)
+	if neuroRadio != nil {
+		neuroRadio.DecodeActiveThreshold = cfg.NRCDecodeActiveThreshold
+		neuroRadio.InitAmpMin = cfg.NRCInitAmpMin
+		neuroRadio.InitAmpRange = cfg.NRCInitAmpRange
+		neuroRadio.InhibitoryRatioDiv = cfg.NRCInhibitoryRatioDiv
+		neuroRadio.InjectAmplitude = cfg.NRCInjectAmplitude
 	}
 
 	// 8. Broca 2.0 — Load BPE tokenizer and MiniTransformer (optional)

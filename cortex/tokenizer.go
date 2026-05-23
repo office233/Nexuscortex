@@ -512,8 +512,15 @@ func LoadBPETokenizer(path string) (*BPETokenizer, error) {
 		return nil, fmt.Errorf("tokenizer unmarshal: %w", err)
 	}
 
-	// Rebuild IDToToken from Vocab
-	idToToken := make([]string, len(data.Vocab))
+	// Rebuild IDToToken from Vocab — allocate based on max ID, not map length,
+	// to prevent silent data loss when IDs have gaps or exceed the map size.
+	maxID := 0
+	for _, id := range data.Vocab {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	idToToken := make([]string, maxID+1)
 	for token, id := range data.Vocab {
 		if id >= 0 && id < len(idToToken) {
 			idToToken[id] = token

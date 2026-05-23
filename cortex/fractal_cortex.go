@@ -11,6 +11,20 @@ import (
 // Override via Config.FractalMaxBlocks.
 const MaxFractalBlocks = 8
 
+// Validation limits for deserialized FractalCortex metadata.
+const (
+	MaxFractalNumLayers = 64
+	MaxFractalDim       = 100_000
+	MaxFractalTopK      = 32
+)
+
+// minActiveDivisor and minActiveFloor control the sparse-output fallback
+// threshold across ProcessToken, ProcessTokenTopK, and ProcessTokenQuantum.
+const (
+	minActiveDivisor = 4
+	minActiveFloor   = 2
+)
+
 // FractalCortex is a dynamically growing "Mixture of Cortexes" (MoC).
 // It starts with one CortexBlock (a SharedCortexStack) and spawns new ones
 // when it encounters high novelty/error, allowing incremental parameter scaling
@@ -50,8 +64,12 @@ func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
 	// Conditionally wire quantum-inspired routing.
 	// QRouter is sized to actual block count (not MaxFractalBlocks) to
 	// avoid routing to non-existent experts.
+	qrTopK := cfg.FractalTopK
+	if qrTopK <= 0 {
+		qrTopK = 2
+	}
 	if cfg.EnableQuantumInspired && len(fc.Blocks) > 0 {
-		fc.QRouter = NewQuantumRouter(len(fc.Blocks), cfg.SDRSize, 2)
+		fc.QRouter = NewQuantumRouter(len(fc.Blocks), cfg.SDRSize, qrTopK)
 		fc.Journal = NewPlasticityJournal()
 	}
 
@@ -90,9 +108,10 @@ func (fc *FractalCortex) SpawnNeurogenesis() {
 			}
 		}
 
-		// Apply perturbation: flip ~10% of ternary tiles for diversity
-		perturbTernaryLayer(newBlock.SharedFeatureLayer, uint8(fc.Config.FractalPerturbRate))
-		perturbTernaryLayer(newBlock.SharedOutputLayer, uint8(fc.Config.FractalPerturbRate))
+		// Apply perturbation: flip ~10% of ternary tiles for diversity.
+		// Use blockID as seed so each block gets a unique perturbation.
+		perturbTernaryLayer(newBlock.SharedFeatureLayer, uint8(fc.Config.FractalPerturbRate), uint64(blockID))
+		perturbTernaryLayer(newBlock.SharedOutputLayer, uint8(fc.Config.FractalPerturbRate), uint64(blockID))
 
 		fc.Blocks = append(fc.Blocks, newBlock)
 	}
@@ -129,12 +148,15 @@ func copyTernaryWeights(src, dst *TernaryLayer) {
 
 // perturbTernaryLayer randomly flips a fraction of ternary tiles.
 // rate is 0-255 where 0=no change, 255=flip all.
-func perturbTernaryLayer(layer *TernaryLayer, rate uint8) {
+// seed should vary per call (e.g. block ID) to avoid identical perturbations.
+func perturbTernaryLayer(layer *TernaryLayer, rate uint8, seed uint64) {
 	if layer == nil || rate == 0 {
 		return
 	}
-	// Simple XOR-based perturbation of the RGBA32 packed tiles
-	state := uint64(0xDEADBEEF42)
+	// Simple XOR-based perturbation of the RGBA32 packed tiles.
+	// Seed is mixed with a constant to avoid zero-state.
+	const perturbSeedBase = 0xDEADBEEF42
+	state := perturbSeedBase ^ seed
 	for i := range layer.Tiles {
 		state ^= state << 13
 		state ^= state >> 7
@@ -145,6 +167,17 @@ func perturbTernaryLayer(layer *TernaryLayer, rate uint8) {
 			layer.Tiles[i] = TernaryTile(uint32(layer.Tiles[i]) ^ flipBit)
 		}
 	}
+}
+
+// sparseOutputFallback returns true if the result SDR is too sparse and
+// should be replaced by bestBlock. Centralises the minActive logic used
+// by ProcessToken, ProcessTokenTopK and ProcessTokenQuantum.
+func sparseOutputFallback(result SDR, bestActive, inputActiveCount int) bool {
+	minActive := inputActiveCount / minActiveDivisor
+	if minActive < minActiveFloor {
+		minActive = minActiveFloor
+	}
+	return result.ActiveCount < minActive && bestActive > 0
 }
 
 // ProcessToken routes the input SDR through CortexBlocks.
@@ -196,11 +229,7 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 	}
 
 	// Fallback: if voting produced too sparse output, use the best single block
-	minActive := input.ActiveCount / 4
-	if minActive < 2 {
-		minActive = 2
-	}
-	if result.ActiveCount < minActive && bestActive > 0 {
+	if sparseOutputFallback(result, bestActive, input.ActiveCount) {
 		return bestBlock
 	}
 
@@ -250,8 +279,8 @@ func (fc *FractalCortex) ProcessTokenTopK(input SDR) SDR {
 		fc.Router.UpdateEmbedding(idx, input)
 	}
 
-	// Majority among selected
-	threshold := len(selected) / 2
+	// Majority among selected — use (len+1)/2 for proper majority
+	threshold := (len(selected) + 1) / 2
 	result := NewSDR(dim)
 	for idx, count := range voteCounts {
 		if count > threshold {
@@ -259,11 +288,7 @@ func (fc *FractalCortex) ProcessTokenTopK(input SDR) SDR {
 		}
 	}
 
-	minActive := input.ActiveCount / 4
-	if minActive < 2 {
-		minActive = 2
-	}
-	if result.ActiveCount < minActive && bestActive > 0 {
+	if sparseOutputFallback(result, bestActive, input.ActiveCount) {
 		return bestBlock
 	}
 
@@ -412,14 +437,14 @@ func (fc *FractalCortex) Load(dataDir string) error {
 	if meta.BlocksCount < 0 || meta.BlocksCount > maxBlocks {
 		return fmt.Errorf("invalid blocks_count: %d (max %d)", meta.BlocksCount, maxBlocks)
 	}
-	if meta.NumLayers <= 0 || meta.NumLayers > 64 {
-		return fmt.Errorf("invalid num_layers: %d", meta.NumLayers)
+	if meta.NumLayers <= 0 || meta.NumLayers > MaxFractalNumLayers {
+		return fmt.Errorf("invalid num_layers: %d (max %d)", meta.NumLayers, MaxFractalNumLayers)
 	}
-	if meta.Dim <= 0 || meta.Dim > 100_000 {
-		return fmt.Errorf("invalid dim: %d", meta.Dim)
+	if meta.Dim <= 0 || meta.Dim > MaxFractalDim {
+		return fmt.Errorf("invalid dim: %d (max %d)", meta.Dim, MaxFractalDim)
 	}
-	if meta.TopK <= 0 || meta.TopK > 32 {
-		return fmt.Errorf("invalid top_k: %d", meta.TopK)
+	if meta.TopK <= 0 || meta.TopK > MaxFractalTopK {
+		return fmt.Errorf("invalid top_k: %d (max %d)", meta.TopK, MaxFractalTopK)
 	}
 
 	// Reconstruct blocks
@@ -516,7 +541,11 @@ func (fc *FractalCortex) Load(dataDir string) error {
 
 	// Restore QRouter state from saved metadata.
 	if meta.QRouter != nil && fc.Config.EnableQuantumInspired {
-		fc.QRouter = NewQuantumRouter(len(fc.Blocks), fc.Config.SDRSize, 2)
+		loadTopK := fc.Config.FractalTopK
+		if loadTopK <= 0 {
+			loadTopK = 2
+		}
+		fc.QRouter = NewQuantumRouter(len(fc.Blocks), fc.Config.SDRSize, loadTopK)
 		// Restore learned phases and amplitudes (capped to actual block count)
 		for i := 0; i < len(fc.Blocks) && i < len(meta.QRouter.Phases); i++ {
 			fc.QRouter.ExpertPhases[i] = meta.QRouter.Phases[i]
@@ -588,8 +617,8 @@ func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
 		fc.QRouter.ExpertEmbeddings[idx] = fc.QRouter.ExpertEmbeddings[idx].Union(input)
 	}
 
-	// Majority among selected
-	threshold := len(selected) / 2
+	// Majority among selected — use (len+1)/2 for proper majority
+	threshold := (len(selected) + 1) / 2
 	result := NewSDR(dim)
 	for idx, count := range voteCounts {
 		if count > threshold {
@@ -597,11 +626,7 @@ func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
 		}
 	}
 
-	minActive := input.ActiveCount / 4
-	if minActive < 2 {
-		minActive = 2
-	}
-	if result.ActiveCount < minActive && bestActive > 0 {
+	if sparseOutputFallback(result, bestActive, input.ActiveCount) {
 		return bestBlock
 	}
 

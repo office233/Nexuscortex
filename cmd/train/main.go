@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"math/rand"
 	"nexus-cortex/cortex"
@@ -55,6 +56,14 @@ func loadTexts(path string) ([]string, error) {
 }
 
 func main() {
+	// CLI flags
+	dataDir := flag.String("data-dir", "./data/cortex-training", "Data directory for saving the organism")
+	radioEnabled := flag.Bool("radio-cortex-enabled", true, "Enable RadioCortex")
+	neuroRadioEnabled := flag.Bool("neuro-radio-enabled", true, "Enable NeuroRadioCortex")
+	qaEpochs := flag.Int("epochs", 3, "Number of Q&A training epochs")
+	nrEpochs := flag.Int("nr-epochs", 5, "Number of NeuroRadio training epochs")
+	flag.Parse()
+
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
 	fmt.Println("║  🧠 NEXUS CORTEX — Training Session                        ║")
 	fmt.Println("║  External Data · CUDA GPU · Configurable Neurons            ║")
@@ -63,19 +72,19 @@ func main() {
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	cfg := cortex.DefaultConfig()
-	cfg.DataDir = "./data/cortex-training"
-	cfg.RadioCortexEnabled = true // Enable RadioCortex
-	cfg.NeuroRadioEnabled = true  // 🔥 Enable unified architecture
+	cfg.DataDir = *dataDir
+	cfg.RadioCortexEnabled = *radioEnabled
+	cfg.NeuroRadioEnabled = *neuroRadioEnabled
 
 	// ══════════════════════════════════════════════════════════
 	// LOAD EXTERNAL TRAINING DATA
 	// ══════════════════════════════════════════════════════════
-	dataDir := cfg.TrainingDataDir
+	trainingDataDir := cfg.TrainingDataDir
 
-	qaPath := filepath.Join(dataDir, "qa.json")
-	textsPath := filepath.Join(dataDir, "texts.txt")
+	qaPath := filepath.Join(trainingDataDir, "qa.json")
+	textsPath := filepath.Join(trainingDataDir, "texts.txt")
 
-	fmt.Printf("  📂 Loading data from: %s\n", dataDir)
+	fmt.Printf("  📂 Loading data from: %s\n", trainingDataDir)
 
 	qaCorpus, err := loadQA(qaPath)
 	if err != nil {
@@ -162,7 +171,7 @@ func main() {
 	// PHASE 2: Q&A Training
 	// ══════════════════════════════════════════════════════════
 	if len(qaCorpus) > 0 {
-		epochs := 3
+		epochs := *qaEpochs
 		fmt.Println("┌──────────────────────────────────────────────────────────────┐")
 		fmt.Printf("│  🎓 PHASE 2: Q&A TRAINING (%d epochs × %d pairs)             │\n", epochs, len(qaCorpus))
 		fmt.Println("└──────────────────────────────────────────────────────────────┘")
@@ -204,7 +213,7 @@ func main() {
 	// PHASE 2.5: NeuroRadioCortex Training (unified architecture)
 	// ══════════════════════════════════════════════════════════
 	if org.NeuroRadio != nil && len(qaCorpus) > 0 {
-		epochs := 5
+		epochs := *nrEpochs
 		fmt.Println("┌──────────────────────────────────────────────────────────────┐")
 		fmt.Printf("│  ⚡ PHASE 2.5: NEURO-RADIO TRAINING (%d epochs × %d pairs)    │\n", epochs, len(qaCorpus))
 		fmt.Println("│  TernaryTile weights + RadioMeta routing + Semantic Freqs    │")
@@ -237,7 +246,9 @@ func main() {
 				}
 
 				// Also feed co-occurrence
-				allWords := append(qWords, aWords...)
+				allWords := make([]string, 0, len(qWords)+len(aWords))
+				allWords = append(allWords, qWords...)
+				allWords = append(allWords, aWords...)
 				allIDs := make([]int, len(allWords))
 				for w, word := range allWords {
 					allIDs[w] = int(org.Vocab.GetOrCreate(word))

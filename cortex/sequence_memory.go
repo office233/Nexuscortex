@@ -41,6 +41,8 @@ type SequenceMemory struct {
 	Windows         map[int]*ContextWindow `json:"windows"`
 	MaxTargets      int                    `json:"max_targets"`
 	IncrementWeight uint16                 `json:"increment_weight"`
+	LTPAmount       uint16                 `json:"ltp_amount"`  // LTP reinforcement delta (default 50)
+	LTDAmount       uint16                 `json:"ltd_amount"`  // LTD weakening delta (default 40)
 	mu              sync.RWMutex
 }
 
@@ -61,10 +63,20 @@ func NewSequenceMemory(cfg Config) *SequenceMemory {
 			Transitions: make(map[uint64][]WeightedTransition),
 		}
 	}
+	ltpAmount := cfg.SequenceMemoryLTPAmount
+	if ltpAmount == 0 {
+		ltpAmount = 50
+	}
+	ltdAmount := cfg.SequenceMemoryLTDAmount
+	if ltdAmount == 0 {
+		ltdAmount = 40
+	}
 	return &SequenceMemory{
 		Windows:         windows,
 		MaxTargets:      maxTargets,
 		IncrementWeight: cfg.SequenceMemoryIncrementWeight,
+		LTPAmount:       ltpAmount,
+		LTDAmount:       ltdAmount,
 	}
 }
 
@@ -278,7 +290,7 @@ func (sm *SequenceMemory) Save(path string) error {
 	}
 
 	tmpPath := path + ".tmp"
-	f, err := os.Create(tmpPath)
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("sequence memory create tmp: %w", err)
 	}
@@ -333,6 +345,16 @@ func LoadSequenceMemory(path string, cfg Config) (*SequenceMemory, error) {
 	}
 	sm.MaxTargets = maxTargets
 	sm.IncrementWeight = cfg.SequenceMemoryIncrementWeight
+	ltpAmount := cfg.SequenceMemoryLTPAmount
+	if ltpAmount == 0 {
+		ltpAmount = 50
+	}
+	ltdAmount := cfg.SequenceMemoryLTDAmount
+	if ltdAmount == 0 {
+		ltdAmount = 40
+	}
+	sm.LTPAmount = ltpAmount
+	sm.LTDAmount = ltdAmount
 
 	return sm, nil
 }
@@ -364,15 +386,15 @@ func (sm *SequenceMemory) ReinforceSequence(wordIDs []uint32, positive bool) {
 					found = true
 					if positive {
 						// Strengthen (LTP)
-						newW := uint32(transitions[i].Weight) + 50
+						newW := uint32(transitions[i].Weight) + uint32(sm.LTPAmount)
 						if newW > 65535 {
 							newW = 65535
 						}
 						transitions[i].Weight = uint16(newW)
 					} else {
 						// Weaken (LTD)
-						if transitions[i].Weight > 40 {
-							transitions[i].Weight -= 40
+						if transitions[i].Weight > sm.LTDAmount {
+							transitions[i].Weight -= sm.LTDAmount
 						} else {
 							transitions[i].Weight = 0
 						}
@@ -395,7 +417,7 @@ func (sm *SequenceMemory) ReinforceSequence(wordIDs []uint32, positive bool) {
 				if len(transitions) < sm.MaxTargets {
 					cw.Transitions[hash] = append(transitions, WeightedTransition{
 						TargetID: target,
-						Weight:   50,
+						Weight:   sm.LTPAmount,
 						Count:    1,
 					})
 				}

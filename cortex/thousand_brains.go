@@ -6,6 +6,13 @@ import (
 	"sync"
 )
 
+// inputProjectionPrime is the prime multiplier used to distribute input
+// bits across different column neuron indices. Each column c maps input
+// bit idx to neuron (idx + c*inputProjectionPrime) % ColNeurons.
+// This must be coprime with ColNeurons to avoid degenerate projections.
+// 37 is a safe default for typical ColNeurons values (100, 200, etc.).
+const inputProjectionPrime = 37
+
 // ─────────────────────────────────────────────────────────────────────
 // Thousand Brains — 1000 Brains Theory Implementation
 // ─────────────────────────────────────────────────────────────────────
@@ -160,7 +167,7 @@ func (tb *ThousandBrains) Process(input SDR) SDR {
 				for word != 0 {
 					tz := bits.TrailingZeros64(word)
 					idx := base + tz
-					neuronIdx := (idx + c*37) % tb.ColNeurons
+					neuronIdx := (idx + c*inputProjectionPrime) % tb.ColNeurons
 					col.ExternalInputs[neuronIdx] = tb.InputCurrent
 					word &= word - 1
 				}

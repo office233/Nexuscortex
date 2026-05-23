@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,7 +51,7 @@ type AutonomousLearner struct {
 	TotalLearned  int
 	TotalSearches int
 	StartTime     time.Time
-	Running       bool
+	Running       atomic.Bool
 
 	// Seed topics for initial curiosity
 	SeedTopics []string
@@ -136,8 +137,8 @@ func (al *AutonomousLearner) OnLowConfidence(input string, confidence uint8) {
 // Run starts the autonomous learning loop. Blocks until ctx is cancelled.
 func (al *AutonomousLearner) Run(ctx context.Context, logFn func(string)) {
 	al.StartTime = time.Now()
-	al.Running = true
-	defer func() { al.Running = false }()
+	al.Running.Store(true)
+	defer func() { al.Running.Store(false) }()
 
 	if logFn == nil {
 		logFn = func(s string) { fmt.Println(s) }

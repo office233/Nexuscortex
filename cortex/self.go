@@ -189,7 +189,7 @@ func (s *SelfModel) Save(path string) error {
 // LoadSelfModel restores SelfModel state from a JSON file.
 // Returns (nil, nil) if the file does not exist, allowing the caller
 // to fall back to NewSelfModel.
-func LoadSelfModel(path string) (*SelfModel, error) {
+func LoadSelfModel(path string, cfgs ...Config) (*SelfModel, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -204,11 +204,18 @@ func LoadSelfModel(path string) (*SelfModel, error) {
 	if data.KnownTopics == nil {
 		data.KnownTopics = make(map[string]uint8)
 	}
+	var cfg Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	} else {
+		cfg = DefaultConfig()
+	}
 	return &SelfModel{
 		KnownTopics:   data.KnownTopics,
 		SuccessCount:  data.SuccessCount,
 		FailureCount:  data.FailureCount,
 		TotalInputs:   data.TotalInputs,
 		AvgConfidence: data.AvgConfidence,
+		Cfg:           cfg,
 	}, nil
 }

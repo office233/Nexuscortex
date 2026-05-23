@@ -205,6 +205,9 @@ func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 	initAmpMin := 100
 	initAmpRange := 156
 	inhibitoryDiv := 5
+	if inhibitoryDiv <= 0 {
+		inhibitoryDiv = 5
+	}
 
 	tiles := make([]NeuroRadioTile, size)
 
@@ -238,6 +241,11 @@ func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 		InhibitoryRatioDiv:    inhibitoryDiv,
 		InjectAmplitude:       200,
 	}
+
+	// Build decoder and wire the decode threshold
+	nrc.Decoder = NewOutputNeuronDecoder(codec, 0)
+	nrc.Decoder.threshold = nrc.DecodeActiveThreshold
+
 	return nrc
 }
 
@@ -378,6 +386,9 @@ func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, t
 
 // Neurogenesis replaces dead tiles with fresh ones.
 func (nrc *NeuroRadioCortex) Neurogenesis() int {
+	if nrc.InhibitoryRatioDiv <= 0 {
+		nrc.InhibitoryRatioDiv = 5
+	}
 	replaced := 0
 	for i := range nrc.Tiles {
 		if !nrc.Tiles[i].IsAlive() {

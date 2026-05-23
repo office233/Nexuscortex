@@ -107,6 +107,8 @@ type Config struct {
 	// Sequence Memory configuration
 	SequenceMemoryMaxTargets      int    `json:"sequence_memory_max_targets"`
 	SequenceMemoryIncrementWeight uint16 `json:"sequence_memory_increment_weight"`
+	SequenceMemoryLTPAmount       uint16 `json:"sequence_memory_ltp_amount"`        // LTP reinforcement delta (default 50)
+	SequenceMemoryLTDAmount       uint16 `json:"sequence_memory_ltd_amount"`        // LTD weakening delta (default 40)
 
 	// STDP Learning configuration
 	StdpPotentiate uint8 `json:"stdp_potentiate"`
@@ -160,8 +162,10 @@ type Config struct {
 	CuriosityRateStep          uint8 `json:"curiosity_rate_step"`
 
 	// Emotion Dynamics configuration
-	EmotionStabilityThreshold int `json:"emotion_stability_threshold"`
-	EmotionConfidenceBaseline uint8 `json:"emotion_confidence_baseline"`
+	EmotionStabilityThreshold   int   `json:"emotion_stability_threshold"`
+	EmotionConfidenceBaseline   uint8 `json:"emotion_confidence_baseline"`
+	EmotionCuriositySweetSpotLow  uint8 `json:"emotion_curiosity_sweet_spot_low"`  // Lower boundary for curiosity (default 30)
+	EmotionCuriositySweetSpotHigh uint8 `json:"emotion_curiosity_sweet_spot_high"` // Upper boundary for curiosity (default 100)
 
 	// Reward Curve configuration
 	RewardSweetSpotLow  uint8 `json:"reward_sweet_spot_low"`
@@ -284,6 +288,15 @@ type Config struct {
 	TransformerFFNDim    int `json:"transformer_ffn_dim"`     // FFN inner dimension (default 1024)
 	TransformerMaxSeqLen int `json:"transformer_max_seq_len"` // Max sequence length (default 512)
 
+	// Semantic Memory configuration
+	SemanticMemorySimThreshold uint8 `json:"semantic_memory_sim_threshold"` // Similarity threshold for concept match (default 80)
+
+	// Web Learner URL allowlist
+	WebLearnerAllowedDomains []string `json:"web_learner_allowed_domains,omitempty"` // Allowed domains for SSRF check
+
+	// Embedding configuration
+	EmbeddingUnkTokenID int `json:"embedding_unk_token_id"` // UNK token ID fallback (default 1)
+
 	// Autonomous learner
 	AutoLowConfThreshold int `json:"auto_low_conf_threshold"` // Low confidence threshold (default 100)
 }
@@ -389,6 +402,8 @@ func DefaultConfig() Config {
 		// Sequence Memory defaults
 		SequenceMemoryMaxTargets:      64,
 		SequenceMemoryIncrementWeight: 10,
+		SequenceMemoryLTPAmount:       50,
+		SequenceMemoryLTDAmount:       40,
 
 		// STDP Learning defaults
 		StdpPotentiate: 10,
@@ -442,8 +457,10 @@ func DefaultConfig() Config {
 		CuriosityRateStep:          10,
 
 		// Emotion Dynamics defaults
-		EmotionStabilityThreshold: 30,
-		EmotionConfidenceBaseline: 128,
+		EmotionStabilityThreshold:       30,
+		EmotionConfidenceBaseline:       128,
+		EmotionCuriositySweetSpotLow:    30,
+		EmotionCuriositySweetSpotHigh:   100,
 
 		// Reward Curve defaults
 		RewardSweetSpotLow:  30,
@@ -580,6 +597,15 @@ func DefaultConfig() Config {
 		TransformerNumLayers: 4,
 		TransformerFFNDim:    1024,
 		TransformerMaxSeqLen: 512,
+
+		// Semantic Memory defaults
+		SemanticMemorySimThreshold: 80,
+
+		// Web Learner allowed domains
+		WebLearnerAllowedDomains: []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"},
+
+		// Embedding defaults
+		EmbeddingUnkTokenID: 1,
 
 		// Autonomous learner defaults
 		AutoLowConfThreshold: 100,

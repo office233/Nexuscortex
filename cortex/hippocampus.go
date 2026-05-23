@@ -727,7 +727,9 @@ func (h *Hippocampus) Save(path string) error {
 }
 
 // LoadHippocampus deserializes a hippocampus from a binary file.
-func LoadHippocampus(path string) (*Hippocampus, error) {
+// An optional Config can be passed to restore threshold fields that
+// are not persisted in the binary format.
+func LoadHippocampus(path string, cfgs ...Config) (*Hippocampus, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("hippocampus load: %w", err)
@@ -754,6 +756,15 @@ func LoadHippocampus(path string) (*Hippocampus, error) {
 	h := &Hippocampus{
 		Memories:    make([]Memory, count),
 		MaxMemories: int(maxMem),
+	}
+
+	// Apply config thresholds if provided
+	if len(cfgs) > 0 {
+		cfg := cfgs[0]
+		h.MaxMemories = cfg.MaxMemories
+		h.ReconsolidationThresh = cfg.HippoReconsolidationThresh
+		h.InitialStrength = cfg.HippoInitialStrength
+		h.LtpThreshold = cfg.HippoLtpThreshold
 	}
 
 	for i := int32(0); i < count; i++ {

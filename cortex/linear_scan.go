@@ -26,6 +26,26 @@ import (
 	"math/bits"
 )
 
+// Named constants for linear scan hyperparameters.
+const (
+	// SDRActiveValue is the activation level assigned to active SDR bits
+	// in sparse forward passes (UltraDeepStack).
+	SDRActiveValue int16 = 127
+
+	// temporalBlendDivisor controls the blending ratio between new features
+	// and temporal state in UltraDeepStack.
+	temporalBlendDivisor int16 = 4
+
+	// targetSparsityDivisor controls the maximum active fraction of state
+	// bits in StepFast. E.g., divisor 10 → keep ~10% sparsity.
+	targetSparsityDivisor = 10
+
+	// Decay band thresholds partition the 0-255 DecayRate range.
+	decayHigh uint8 = 192 // ~75% decay per step
+	decayMid  uint8 = 128 // ~50% decay
+	decayLow  uint8 = 64  // ~25% decay
+)
+
 // LinearScanLayer maintains a recurrent SDR state that processes
 // tokens one at a time with O(1) memory per step.
 type LinearScanLayer struct {
@@ -128,12 +148,12 @@ func (l *LinearScanLayer) StepFast(input SDR) SDR {
 
 	// Limit active count to prevent state explosion
 	combined := l.State.Union(input)
-	if combined.ActiveCount > l.StateSize/10 { // Keep ~10% sparsity
+	if combined.ActiveCount > l.StateSize/targetSparsityDivisor { // Keep ~10% sparsity
 		// Too many active bits — keep only the most reinforced ones
 		// Prefer bits that are in BOTH state and input (reinforced)
 		overlap := sdrAnd(l.State, input)
 		// Fill remaining slots with state bits, then input bits
-		remaining := l.StateSize/10 - overlap.ActiveCount
+		remaining := l.StateSize/targetSparsityDivisor - overlap.ActiveCount
 		if remaining > 0 {
 			l.State = overlap
 			// Add state-only bits up to limit
@@ -183,11 +203,11 @@ func (l *LinearScanLayer) decay() {
 		// The higher DecayRate is, the more bits in the mask
 		var decayMask uint64
 		switch {
-		case l.DecayRate >= 192: // ~75% decay per step (very fast forget)
+		case l.DecayRate >= decayHigh: // ~75% decay per step (very fast forget)
 			decayMask = state
-		case l.DecayRate >= 128: // ~50% decay
+		case l.DecayRate >= decayMid: // ~50% decay
 			decayMask = state & (state >> 1)
-		case l.DecayRate >= 64: // ~25% decay
+		case l.DecayRate >= decayLow: // ~25% decay
 			decayMask = state & (state >> 1) & (state >> 2)
 		default: // <25% decay (slow forget, long memory)
 			decayMask = state & (state >> 1) & (state >> 2) & (state >> 3)
@@ -521,7 +541,7 @@ func (u *UltraDeepStack) processLayerSparse(input SDR, layerIdx int) SDR {
 	// Convert sparse SDR to sparse activation format
 	values := make([]int16, len(activeIdx))
 	for i := range values {
-		values[i] = 127 // Active bits have activation 127
+		values[i] = SDRActiveValue // Active bits have standard activation
 	}
 
 	// 1. Feature extraction: up-project through shared ternary layer (SPARSE)
@@ -558,7 +578,7 @@ func (u *UltraDeepStack) processLayerSparse(input SDR, layerIdx int) SDR {
 	stateAct := sdrToActivations(u.ScanStates[layerIdx])
 	for i := range downAct {
 		if i < len(stateAct) {
-			downAct[i] += stateAct[i] / 4 // Weak temporal blending
+			downAct[i] += stateAct[i] / temporalBlendDivisor // Weak temporal blending
 		}
 	}
 
@@ -585,7 +605,7 @@ func (u *UltraDeepStack) updateScanState(layerIdx int, inputIdx []int, inputValu
 			counter ^= counter >> 7
 			counter ^= counter << 17
 			var mask uint64
-			if u.DecayRate >= 128 {
+			if u.DecayRate >= decayMid {
 				mask = counter & (counter >> 1)
 			} else {
 				mask = counter & (counter >> 1) & (counter >> 2)

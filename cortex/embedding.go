@@ -21,9 +21,10 @@ type EmbeddingTable struct {
 	TokenEmb *Tensor // [VocabSize, EmbedDim]
 	PosEmb   *Tensor // [MaxSeqLen, EmbedDim]
 
-	VocabSize int
-	EmbedDim  int
-	MaxSeqLen int
+	VocabSize  int
+	EmbedDim   int
+	MaxSeqLen  int
+	UnkTokenID int // Fallback token ID for out-of-range IDs (default 1)
 
 	// Gradients (accumulated during backward pass)
 	TokenEmbGrad *Tensor // [VocabSize, EmbedDim]
@@ -31,9 +32,14 @@ type EmbeddingTable struct {
 }
 
 // NewEmbeddingTable creates an embedding table with Xavier-initialized weights.
-func NewEmbeddingTable(vocabSize, embedDim, maxSeqLen int, rng *rand.Rand) *EmbeddingTable {
+func NewEmbeddingTable(vocabSize, embedDim, maxSeqLen int, rng *rand.Rand, cfgs ...Config) *EmbeddingTable {
 	// Xavier initialization: std = 1 / sqrt(embedDim)
 	std := float32(1.0 / math.Sqrt(float64(embedDim)))
+
+	unkID := 1
+	if len(cfgs) > 0 && cfgs[0].EmbeddingUnkTokenID > 0 {
+		unkID = cfgs[0].EmbeddingUnkTokenID
+	}
 
 	return &EmbeddingTable{
 		TokenEmb:     NewTensorRand(rng, std, vocabSize, embedDim),
@@ -41,6 +47,7 @@ func NewEmbeddingTable(vocabSize, embedDim, maxSeqLen int, rng *rand.Rand) *Embe
 		VocabSize:    vocabSize,
 		EmbedDim:     embedDim,
 		MaxSeqLen:    maxSeqLen,
+		UnkTokenID:   unkID,
 		TokenEmbGrad: NewTensor(vocabSize, embedDim),
 		PosEmbGrad:   NewTensor(maxSeqLen, embedDim),
 	}
@@ -64,7 +71,10 @@ func (e *EmbeddingTable) Forward(tokenIDs []int) *Tensor {
 	for pos := 0; pos < seqLen; pos++ {
 		id := tokenIDs[pos]
 		if id < 0 || id >= e.VocabSize {
-			id = 1 // <UNK>
+			id = e.UnkTokenID // <UNK> fallback
+			if id < 0 || id >= e.VocabSize {
+				id = 0
+			}
 		}
 
 		tokOff := id * e.EmbedDim
@@ -87,7 +97,10 @@ func (e *EmbeddingTable) Backward(dOutput *Tensor, tokenIDs []int) {
 	for pos := 0; pos < seqLen; pos++ {
 		id := tokenIDs[pos]
 		if id < 0 || id >= e.VocabSize {
-			id = 1
+			id = e.UnkTokenID // <UNK> fallback
+			if id < 0 || id >= e.VocabSize {
+				id = 0
+			}
 		}
 
 		tokOff := id * e.EmbedDim

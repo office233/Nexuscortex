@@ -354,10 +354,6 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 				continue
 			}
 			// Anti-loop: skip words that have been used too many times
-			// or that are the same as the last word
-			if cand.Word == lastWord {
-				continue // never repeat the same word consecutively
-			}
 			if recentWords[cand.Word] >= 2 {
 				continue // don't use any word more than twice total
 			}
@@ -368,7 +364,7 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 			break // all candidates are loops, stop
 		}
 
-		// Consecutive repeat detection (even with gaps)
+		// Consecutive repeat detection
 		if nextWord == lastWord {
 			consecutiveRepeats++
 			if consecutiveRepeats >= 2 {

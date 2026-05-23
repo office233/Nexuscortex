@@ -33,15 +33,22 @@ type Concept struct {
 
 // SemanticMemory holds the collection of generalized neocortical concepts.
 type SemanticMemory struct {
-	Concepts []Concept `json:"concepts"`
-	SDRSize  int       `json:"sdr_size"`
+	Concepts     []Concept `json:"concepts"`
+	SDRSize      int       `json:"sdr_size"`
+	SimThreshold uint8     `json:"sim_threshold"` // Similarity threshold for concept match (default 80)
 }
 
 // NewSemanticMemory instantiates a new empty semantic memory.
-func NewSemanticMemory(sdrSize int) *SemanticMemory {
+// Accepts an optional Config to set the similarity threshold.
+func NewSemanticMemory(sdrSize int, cfgs ...Config) *SemanticMemory {
+	var simThresh uint8 = 80
+	if len(cfgs) > 0 && cfgs[0].SemanticMemorySimThreshold > 0 {
+		simThresh = cfgs[0].SemanticMemorySimThreshold
+	}
 	return &SemanticMemory{
-		Concepts: make([]Concept, 0),
-		SDRSize:  sdrSize,
+		Concepts:     make([]Concept, 0),
+		SDRSize:      sdrSize,
+		SimThreshold: simThresh,
 	}
 }
 
@@ -62,8 +69,11 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 		return
 	}
 
-	// Similarity threshold (80 out of 255 represents approx 31% similarity)
-	const SimThreshold uint8 = 80
+	// Use configurable similarity threshold
+	simThreshold := sm.SimThreshold
+	if simThreshold == 0 {
+		simThreshold = 80
+	}
 
 	mergedMemories := make(map[int]bool)
 
@@ -74,7 +84,7 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 
 		for cIdx, c := range sm.Concepts {
 			sim := m.Input.Similarity(c.Prototype)
-			if sim >= SimThreshold && sim > bestSim {
+			if sim >= simThreshold && sim > bestSim {
 				bestSim = sim
 				bestConceptIdx = cIdx
 			}
@@ -94,12 +104,11 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 			//   → This caused concepts to lose bits monotonically until they
 			//     became too sparse to match anything.
 			//
-			// NEW: Merge new evidence into the prototype (union of shared bits
-			// + selective addition of novel bits for young concepts).
-			shared := c.Prototype.Intersect(m.Input)
+			// NEW: Merge new evidence into the prototype (union of episode bits
+			// for young concepts to absorb novel information).
 			if c.Count < 10 {
 				// Young concept: absorb novel bits from episode to grow the prototype
-				c.Prototype = c.Prototype.Union(shared)
+				c.Prototype = c.Prototype.Union(m.Input)
 			}
 			// For mature concepts (Count >= 10), the prototype stays as-is.
 			// The episode validates the concept but doesn't modify it.
@@ -144,7 +153,7 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 			m2 := hip.Memories[j]
 
 			sim := m1.Input.Similarity(m2.Input)
-			if sim >= SimThreshold {
+			if sim >= simThreshold {
 				// Overlapping memory traces found. Generalize via intersection!
 				proto := m1.Input.Intersect(m2.Input)
 

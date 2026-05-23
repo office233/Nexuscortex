@@ -19,7 +19,7 @@ import (
 // ExpertCache is an LRU cache for loaded expert shards.
 // Thread-safe for concurrent access during inference.
 type ExpertCache struct {
-	mu       sync.RWMutex
+	mu       sync.Mutex
 	capacity int                         // Max number of experts to cache
 	items    map[int]*list.Element       // expertID → list element
 	order    *list.List                  // LRU order (front = most recent)
@@ -53,21 +53,31 @@ func NewExpertCache(capacity int, index *ShardedModelIndex) *ExpertCache {
 // Get retrieves an expert from cache, loading from disk on miss.
 // Returns the expert shard and whether it was a cache hit.
 func (c *ExpertCache) Get(expertID int) (*ExpertShard, bool, error) {
+	// Fast path: check cache under lock
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Cache hit
 	if elem, ok := c.items[expertID]; ok {
 		c.order.MoveToFront(elem)
 		c.hits++
+		c.mu.Unlock()
 		return elem.Value.(*cacheEntry).shard, true, nil
 	}
-
-	// Cache miss — load from disk
 	c.misses++
+	c.mu.Unlock()
+
+	// Slow path: disk I/O happens WITHOUT holding the lock
 	shard, err := c.index.LoadExpert(expertID)
 	if err != nil {
 		return nil, false, fmt.Errorf("cache miss load expert %d: %w", expertID, err)
+	}
+
+	// Re-acquire and insert, checking for races (another goroutine may have loaded same expert)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, ok := c.items[expertID]; ok {
+		// Another goroutine loaded this expert while we were reading from disk
+		c.order.MoveToFront(elem)
+		return elem.Value.(*cacheEntry).shard, false, nil
 	}
 
 	// Evict if at capacity
@@ -131,15 +141,15 @@ func (c *ExpertCache) evictOldest() {
 
 // Stats returns cache statistics.
 func (c *ExpertCache) Stats() (hits, misses, evictions uint64, size, capacity int) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.hits, c.misses, c.evictions, c.order.Len(), c.capacity
 }
 
 // HitRate returns the cache hit ratio (0.0 to 1.0).
 func (c *ExpertCache) HitRate() float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	total := c.hits + c.misses
 	if total == 0 {
 		return 0
@@ -153,12 +163,15 @@ func (c *ExpertCache) Clear() {
 	defer c.mu.Unlock()
 	c.items = make(map[int]*list.Element, c.capacity)
 	c.order.Init()
+	c.hits = 0
+	c.misses = 0
+	c.evictions = 0
 }
 
 // Contains checks if an expert is in the cache without affecting LRU order.
 func (c *ExpertCache) Contains(expertID int) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, ok := c.items[expertID]
 	return ok
 }
@@ -166,8 +179,8 @@ func (c *ExpertCache) Contains(expertID int) bool {
 // CachedExperts returns the list of currently cached expert IDs,
 // ordered from most recently used to least.
 func (c *ExpertCache) CachedExperts() []int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	result := make([]int, 0, c.order.Len())
 	for elem := c.order.Front(); elem != nil; elem = elem.Next() {
 		result = append(result, elem.Value.(*cacheEntry).expertID)
@@ -177,8 +190,8 @@ func (c *ExpertCache) CachedExperts() []int {
 
 // MemoryUsageBytes returns approximate memory usage of cached experts.
 func (c *ExpertCache) MemoryUsageBytes() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var total int64
 	for elem := c.order.Front(); elem != nil; elem = elem.Next() {
 		entry := elem.Value.(*cacheEntry)

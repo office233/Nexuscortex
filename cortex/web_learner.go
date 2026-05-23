@@ -26,11 +26,12 @@ type WebLearner struct {
 	lastReq   time.Time
 
 	// Configurable endpoints and limits (from Config)
-	BodyLimit    int64  // max HTTP response body in bytes
-	UserAgent    string // User-Agent header
-	WikiBaseURL  string // e.g. "wikipedia.org"
-	HFSearchURL  string // HuggingFace dataset search URL
-	HFRowsURL    string // HuggingFace rows API URL
+	BodyLimit      int64    // max HTTP response body in bytes
+	UserAgent      string   // User-Agent header
+	WikiBaseURL    string   // e.g. "wikipedia.org"
+	HFSearchURL    string   // HuggingFace dataset search URL
+	HFRowsURL      string   // HuggingFace rows API URL
+	AllowedDomains []string // Allowed domains for SSRF URL check
 
 	// Stats
 	TotalSearches int
@@ -74,26 +75,35 @@ func NewWebLearnerFromConfig(cfg Config) *WebLearner {
 		hfRows = "https://datasets-server.huggingface.co/rows"
 	}
 
-	return &WebLearner{
-		Client: &http.Client{
-			Timeout: timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 5 {
-					return fmt.Errorf("SSRF prevention: too many redirects (%d)", len(via))
-				}
-				if !isAllowedURL(req.URL.String()) {
-					return fmt.Errorf("SSRF prevention: blocked redirect to %s", req.URL.String())
-				}
-				return nil
-			},
-		},
-		RateLimit:   rateLimit,
-		BodyLimit:   int64(bodyLimitMB) << 20,
-		UserAgent:   userAgent,
-		WikiBaseURL: wikiBase,
-		HFSearchURL: hfSearch,
-		HFRowsURL:   hfRows,
+	allowedDomains := cfg.WebLearnerAllowedDomains
+	if len(allowedDomains) == 0 {
+		allowedDomains = []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
 	}
+
+	wl := &WebLearner{
+		RateLimit:      rateLimit,
+		BodyLimit:      int64(bodyLimitMB) << 20,
+		UserAgent:      userAgent,
+		WikiBaseURL:    wikiBase,
+		HFSearchURL:    hfSearch,
+		HFRowsURL:      hfRows,
+		AllowedDomains: allowedDomains,
+	}
+
+	wl.Client = &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("SSRF prevention: too many redirects (%d)", len(via))
+			}
+			if !wl.IsAllowedURL(req.URL.String()) {
+				return fmt.Errorf("SSRF prevention: blocked redirect to %s", req.URL.String())
+			}
+			return nil
+		},
+	}
+
+	return wl
 }
 
 // SearchResult holds one piece of discovered knowledge.
@@ -114,7 +124,23 @@ func (wl *WebLearner) throttle() {
 	wl.lastReq = time.Now()
 }
 
+// isAllowedURL is the package-level compatibility wrapper (uses default allowlist).
 func isAllowedURL(targetURL string) bool {
+	defaultDomains := []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
+	return checkAllowedURL(targetURL, defaultDomains)
+}
+
+// IsAllowedURL checks if a URL is in the WebLearner's configured allowlist.
+func (wl *WebLearner) IsAllowedURL(targetURL string) bool {
+	domains := wl.AllowedDomains
+	if len(domains) == 0 {
+		domains = []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
+	}
+	return checkAllowedURL(targetURL, domains)
+}
+
+// checkAllowedURL checks if a URL's host is in the given domain allowlist.
+func checkAllowedURL(targetURL string, allowed []string) bool {
 	u, err := url.Parse(targetURL)
 	if err != nil {
 		return false
@@ -127,7 +153,6 @@ func isAllowedURL(targetURL string) bool {
 		return false
 	}
 
-	allowed := []string{"huggingface.co", "datasets-server.huggingface.co", "wikipedia.org"}
 	for _, domain := range allowed {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
@@ -153,7 +178,7 @@ func (wl *WebLearner) SearchWikipedia(query string, lang string, maxResults int)
 	apiURL := fmt.Sprintf("https://%s.%s/w/api.php?action=query&list=search&srsearch=%s&srlimit=%d&format=json&utf8=1",
 		lang, wl.WikiBaseURL, url.QueryEscape(query), maxResults)
 
-	if !isAllowedURL(apiURL) {
+	if !wl.IsAllowedURL(apiURL) {
 		return nil, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
 	}
 
@@ -215,7 +240,7 @@ func (wl *WebLearner) GetWikipediaSummary(title string, lang string) (*SearchRes
 	apiURL := fmt.Sprintf("https://%s.%s/api/rest_v1/page/summary/%s",
 		lang, wl.WikiBaseURL, url.PathEscape(title))
 
-	if !isAllowedURL(apiURL) {
+	if !wl.IsAllowedURL(apiURL) {
 		return nil, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
 	}
 
@@ -310,7 +335,7 @@ func (wl *WebLearner) SearchHuggingFace(query string, maxResults int) ([]SearchR
 	apiURL := fmt.Sprintf("%s?search=%s&limit=%d",
 		wl.HFSearchURL, url.QueryEscape(query), maxResults)
 
-	if !isAllowedURL(apiURL) {
+	if !wl.IsAllowedURL(apiURL) {
 		return nil, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
 	}
 
@@ -377,7 +402,7 @@ func (wl *WebLearner) LearnFromHuggingFace(org *Organism, datasetID string, maxR
 	apiURL := fmt.Sprintf("%s?dataset=%s&config=default&split=train&offset=0&length=%d",
 		wl.HFRowsURL, url.QueryEscape(datasetID), maxRows)
 
-	if !isAllowedURL(apiURL) {
+	if !wl.IsAllowedURL(apiURL) {
 		return 0, fmt.Errorf("SSRF prevention: blocked URL %q", apiURL)
 	}
 

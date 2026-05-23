@@ -122,16 +122,29 @@ func LoadNeuroRadioCortex(path string) (*NeuroRadioCortex, error) {
 	// Reconstruct the cortex.
 	rng := rand.New(rand.NewSource(int64(tickCount)))
 
+	codec := NewSemanticFreqCodec()
+
 	nrc := &NeuroRadioCortex{
 		Tiles:     tiles,
 		Size:      size,
 		TickCount: tickCount,
-		Codec:     NewSemanticFreqCodec(),
+		Codec:     codec,
 		rng:       rng,
+		// Set safe defaults for config fields that aren't persisted
+		DecodeActiveThreshold: 5,
+		InitAmpMin:            100,
+		InitAmpRange:          156,
+		InhibitoryRatioDiv:    5,
+		InjectAmplitude:       200,
 	}
 
 	// Rebuild bucket index.
 	nrc.Index = NewRadioBucketIndex(tiles)
+
+	// Reconstruct the Decoder from codec
+	nTok, _, _ := codec.Stats()
+	nrc.Decoder = NewOutputNeuronDecoder(codec, nTok)
+	nrc.Decoder.threshold = nrc.DecodeActiveThreshold
 
 	return nrc, nil
 }

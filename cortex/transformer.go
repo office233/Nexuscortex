@@ -27,7 +27,11 @@ type TransformerConfig struct {
 	NumLayers  int `json:"num_layers"`   // Number of transformer blocks
 	FFNDim     int `json:"ffn_dim"`      // Feed-forward inner dimension (typically 4×EmbedDim)
 	MaxSeqLen  int `json:"max_seq_len"`  // Maximum sequence length
+	EOSTokenID int `json:"eos_token_id"` // End-of-sequence token ID (default 3)
 }
+
+// DefaultEOSTokenID is the default end-of-sequence token ID.
+const DefaultEOSTokenID = 3
 
 // DefaultTransformerConfig returns a small but functional config (~13M params).
 func DefaultTransformerConfig(vocabSize int) TransformerConfig {
@@ -365,6 +369,9 @@ type MiniTransformer struct {
 	// lmHead = Embedding.TokenEmb transposed → [EmbedDim, VocabSize]
 	UseTiedWeights bool
 
+	// Cached hidden state from last Forward() for use in TrainStep
+	lastHiddenState *Tensor
+
 	Rng *rand.Rand
 }
 
@@ -408,6 +415,9 @@ func (m *MiniTransformer) Forward(tokenIDs []int) *Tensor {
 
 	// 3. Final layer norm
 	x = x.LayerNorm(m.LNFGamma, m.LNFBeta)
+
+	// Cache the hidden state for TrainStep (avoids double forward pass)
+	m.lastHiddenState = x
 
 	// 4. LM Head: project to vocabulary
 	// With weight tying: logits = x × TokenEmb^T
@@ -454,13 +464,8 @@ func (m *MiniTransformer) TrainStep(tokenIDs []int, lr float32) float32 {
 	// dX = dLogits × TokenEmb  (gradient w.r.t. transformer output)
 	// dTokenEmb += dLogits^T × x  (accumulated in embedding grad)
 
-	// Get the last hidden state (after final LN)
-	// We need to re-derive x from the forward pass
-	x := m.Embedding.Forward(input)
-	for _, block := range m.Blocks {
-		x = block.Forward(x)
-	}
-	x = x.LayerNorm(m.LNFGamma, m.LNFBeta)
+	// Reuse hidden state from the Forward() call above
+	x := m.lastHiddenState
 
 	// Gradient through tied LM head
 	dX := dLogits.MatMul(m.Embedding.TokenEmb)
@@ -541,7 +546,7 @@ func (m *MiniTransformer) Generate(prompt []int, maxNewTokens int, temperature f
 		temperature = 1.0
 	}
 	if topK <= 0 {
-		topK = 40
+		topK = m.Config.VocabSize // greedy: consider entire vocab
 	}
 
 	generated := make([]int, len(prompt))
@@ -572,8 +577,12 @@ func (m *MiniTransformer) Generate(prompt []int, maxNewTokens int, temperature f
 		nextToken := topKSample(lastLogits, topK, m.Rng)
 		generated = append(generated, nextToken)
 
-		// Stop at EOS (ID 3)
-		if nextToken == 3 {
+		// Stop at EOS
+		eosID := m.Config.EOSTokenID
+		if eosID == 0 {
+			eosID = DefaultEOSTokenID
+		}
+		if nextToken == eosID {
 			break
 		}
 	}

@@ -205,6 +205,7 @@ type wernickeSaveData struct {
 }
 
 // Save persists the Wernicke n-gram context to a JSON file.
+// Uses atomic temp-file + sync + rename to prevent corruption on crash.
 func (w *Wernicke) Save(path string) error {
 	data := wernickeSaveData{
 		NGrams: w.NGrams,
@@ -213,10 +214,24 @@ func (w *Wernicke) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("wernicke save marshal: %w", err)
 	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		return fmt.Errorf("wernicke save write: %w", err)
+
+	tmpPath := path + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("wernicke create tmp: %w", err)
 	}
-	return nil
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("wernicke write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("wernicke sync: %w", err)
+	}
+	f.Close()
+	return os.Rename(tmpPath, path)
 }
 
 // LoadWernicke restores Wernicke state from a JSON file and wires the

@@ -109,26 +109,42 @@ func (e *EmotionEngine) Update(reward int8, predictionError uint8, interactionCo
 	// Peaks in the sweet spot (prediction error 30–100).
 	// Below 30: curiosity drops (boring). Above 100: curiosity drops
 	// (overwhelming). Within the band: scales to 255 at the center.
+	sweetLow := e.Config.EmotionCuriositySweetSpotLow
+	if sweetLow == 0 {
+		sweetLow = 30
+	}
+	sweetHigh := e.Config.EmotionCuriositySweetSpotHigh
+	if sweetHigh == 0 {
+		sweetHigh = 100
+	}
+	if sweetHigh <= sweetLow {
+		sweetHigh = sweetLow + 1
+	}
+	sweetCenter := int16((uint16(sweetLow) + uint16(sweetHigh)) / 2)
+	sweetHalfSpan := int16(sweetHigh-sweetLow) / 2
+	if sweetHalfSpan < 1 {
+		sweetHalfSpan = 1
+	}
+
 	var targetCuriosity uint8
 	switch {
-	case predictionError < 30:
+	case predictionError < sweetLow:
 		// Boring — low curiosity proportional to error.
-		targetCuriosity = uint8(uint16(predictionError) * 80 / 30) // 0..80
-	case predictionError <= 100:
+		targetCuriosity = uint8(uint16(predictionError) * 80 / uint16(sweetLow)) // 0..80
+	case predictionError <= sweetHigh:
 		// Sweet spot — curiosity peaks.
-		// Distance from center (65): 0 at center → 255.
-		center := int16(65)
-		dist := int16(predictionError) - center
+		// Distance from center: 0 at center → 255.
+		dist := int16(predictionError) - sweetCenter
 		if dist < 0 {
 			dist = -dist
 		}
-		// At center: 255, at edges (30 or 100): ~127.
-		targetCuriosity = uint8(255 - uint16(dist)*128/35)
+		// At center: 255, at edges: ~127.
+		targetCuriosity = uint8(255 - uint16(dist)*128/uint16(sweetHalfSpan))
 	default:
 		// Overwhelming — curiosity crashes.
-		// 101→60, 255→0.
-		if predictionError < 161 {
-			targetCuriosity = uint8(60 - uint16(predictionError-101)*60/60)
+		overBase := uint16(sweetHigh) + 1
+		if predictionError < uint8(overBase+60) {
+			targetCuriosity = uint8(60 - uint16(predictionError-uint8(overBase))*60/60)
 		}
 		// else: 0 (already zero-initialized)
 	}
@@ -280,6 +296,9 @@ func (e *EmotionEngine) Decay() {
 
 // blendU8 smoothly moves current toward target by pct percent (0–100).
 func blendU8(current, target uint8, pct uint16) uint8 {
+	if pct > 100 {
+		pct = 100
+	}
 	c := uint16(current)
 	t := uint16(target)
 	result := (c*(100-pct) + t*pct) / 100

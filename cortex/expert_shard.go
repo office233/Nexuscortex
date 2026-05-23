@@ -88,7 +88,8 @@ func DefaultCodebook() *TileCodebook {
 	}
 
 	// Patterns 49-128: random common patterns (increasing density)
-	state := uint64(0xCAFEBABE)
+	const codebookSeed = uint64(0xCAFEBABE)
+	state := codebookSeed
 	for i := 49; i < 129; i++ {
 		var weights [16]int8
 		density := (i - 49) / 10 // 0-7 active weights
@@ -224,7 +225,10 @@ func CreateShardedModel(path string, experts []*TernaryLayer, codebook *TileCode
 	}
 
 	// Reserve space for offset table (expertCount × 16 bytes: offset + size)
-	offsetTableStart, _ := f.Seek(0, 1) // current position
+	offsetTableStart, err := f.Seek(0, 1)
+	if err != nil {
+		return nil, fmt.Errorf("seek for offset table: %w", err)
+	}
 	offsetTable := make([]byte, len(experts)*16)
 	if _, err := f.Write(offsetTable); err != nil {
 		return nil, fmt.Errorf("reserve offset table: %w", err)
@@ -235,7 +239,10 @@ func CreateShardedModel(path string, experts []*TernaryLayer, codebook *TileCode
 	sizes := make([]int64, len(experts))
 
 	for i, expert := range experts {
-		offset, _ := f.Seek(0, 1)
+		offset, err := f.Seek(0, 1)
+		if err != nil {
+			return nil, fmt.Errorf("seek before expert %d: %w", i, err)
+		}
 		offsets[i] = offset
 
 		// Write expert header
@@ -256,15 +263,24 @@ func CreateShardedModel(path string, experts []*TernaryLayer, codebook *TileCode
 			return nil, fmt.Errorf("write expert %d tiles: %w", i, err)
 		}
 
-		endOffset, _ := f.Seek(0, 1)
+		endOffset, err := f.Seek(0, 1)
+		if err != nil {
+			return nil, fmt.Errorf("seek after expert %d: %w", i, err)
+		}
 		sizes[i] = endOffset - offset
 	}
 
 	// Go back and write the offset table
-	f.Seek(offsetTableStart, 0)
+	if _, err := f.Seek(offsetTableStart, 0); err != nil {
+		return nil, fmt.Errorf("seek to offset table: %w", err)
+	}
 	for i := range experts {
-		binary.Write(f, binary.LittleEndian, offsets[i])
-		binary.Write(f, binary.LittleEndian, sizes[i])
+		if err := binary.Write(f, binary.LittleEndian, offsets[i]); err != nil {
+			return nil, fmt.Errorf("write offset[%d]: %w", i, err)
+		}
+		if err := binary.Write(f, binary.LittleEndian, sizes[i]); err != nil {
+			return nil, fmt.Errorf("write size[%d]: %w", i, err)
+		}
 	}
 
 	return &ShardedModelIndex{
@@ -312,8 +328,12 @@ func LoadShardedModelIndex(path string) (*ShardedModelIndex, error) {
 	offsets := make([]int64, hdr.ExpertCount)
 	sizes := make([]int64, hdr.ExpertCount)
 	for i := uint32(0); i < hdr.ExpertCount; i++ {
-		binary.Read(f, binary.LittleEndian, &offsets[i])
-		binary.Read(f, binary.LittleEndian, &sizes[i])
+		if err := binary.Read(f, binary.LittleEndian, &offsets[i]); err != nil {
+			return nil, fmt.Errorf("read offset[%d]: %w", i, err)
+		}
+		if err := binary.Read(f, binary.LittleEndian, &sizes[i]); err != nil {
+			return nil, fmt.Errorf("read size[%d]: %w", i, err)
+		}
 	}
 
 	return &ShardedModelIndex{

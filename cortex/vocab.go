@@ -14,8 +14,8 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 //
 // To generate text like an LLM, we need word-level neurons,
-// not just character-level. Each unique word gets a uint16 ID
-// (supporting up to 65,535 words).
+// not just character-level. Each unique word gets a uint32 ID
+// (supporting up to ~4 billion words).
 
 // Vocab manages the bidirectional word↔ID mapping.
 type Vocab struct {
@@ -94,6 +94,7 @@ func (v *Vocab) Size() int {
 }
 
 // Save writes the vocabulary to a JSON file.
+// Uses atomic temp-file + sync + rename to prevent corruption on crash.
 func (v *Vocab) Save(path string) error {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -102,7 +103,24 @@ func (v *Vocab) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal vocab: %w", err)
 	}
-	return os.WriteFile(path, data, 0600)
+
+	tmpPath := path + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("vocab create tmp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("vocab write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("vocab sync: %w", err)
+	}
+	f.Close()
+	return os.Rename(tmpPath, path)
 }
 
 // LoadVocab reads a vocabulary from a JSON file.
