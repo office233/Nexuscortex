@@ -53,3 +53,15 @@ __pycache__/
 
 # Scratch/experimental files in root
 scratch_test_*.go
+
+# Training artifacts (regenerable)
+data/cortex-training/
+!data/cortex-training/.gitkeep
+
+# CUDA build artifacts
+*.lib
+*.exp
+*.pdb
+
+# Training binary
+train-radio.exe
