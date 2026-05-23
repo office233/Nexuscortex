@@ -108,22 +108,35 @@ func (d *OutputNeuronDecoder) Decode(bus *RadioBus) (tokenID int, score int64) {
 		return -1, 0
 	}
 
-	// Score candidates (only tokens on active frequencies)
-	scores := make(map[int]int64)
+	// Determine max token ID for slice sizing
+	maxTID := 0
+	for _, freq := range activeFreqs {
+		for _, nIdx := range d.FreqIndex[freq] {
+			if d.Neurons[nIdx].TokenID > maxTID {
+				maxTID = d.Neurons[nIdx].TokenID
+			}
+		}
+	}
+
+	// Use slice instead of map for zero-alloc scoring
+	scores := make([]int64, maxTID+1)
+	seen := make([]bool, maxTID+1)
+
 	for _, freq := range activeFreqs {
 		signal, _ := bus.Read(freq)
 		for _, nIdx := range d.FreqIndex[freq] {
 			n := &d.Neurons[nIdx]
 			scores[n.TokenID] += int64(signal) + int64(n.Bias)
+			seen[n.TokenID] = true
 		}
 	}
 
 	// Find best
 	bestID := -1
 	var bestScore int64
-	for tid, s := range scores {
-		if s > bestScore {
-			bestScore = s
+	for tid := range scores {
+		if seen[tid] && scores[tid] > bestScore {
+			bestScore = scores[tid]
 			bestID = tid
 		}
 	}

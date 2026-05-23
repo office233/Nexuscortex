@@ -18,6 +18,11 @@ type SignalCodec struct {
 	freqsPerTok  int        // how many frequencies per token (default 13)
 	tokenFreqs   [][]uint8  // tokenFreqs[tokenID] = sorted list of frequencies
 	freqToTokens [256][]int // reverse index: which tokens use this frequency
+
+	// Semantic: if set, delegate frequency lookups here first.
+	// SemanticFreqCodec provides co-occurrence-based frequency assignment.
+	// SignalCodec falls back to hash if Semantic has no mapping.
+	Semantic *SemanticFreqCodec
 }
 
 // NewSignalCodec creates a codec with default 13 frequencies per token.
@@ -75,7 +80,19 @@ func (sc *SignalCodec) buildSpectrum() {
 }
 
 // TokenFreqs returns the frequency chord for a token.
+// If a SemanticFreqCodec is attached and has a mapping, use that.
+// Otherwise fall back to hash-based frequencies.
 func (sc *SignalCodec) TokenFreqs(tokenID int) []uint8 {
+	// Try semantic codec first
+	if sc.Semantic != nil {
+		if freqs := sc.Semantic.Encode(tokenID); len(freqs) > 0 {
+			// Check if it's a real mapping (not just hash fallback)
+			if _, ok := sc.Semantic.tokenFreqSet[tokenID]; ok {
+				return freqs
+			}
+		}
+	}
+	// Fall back to hash-based frequencies
 	if tokenID < 0 || tokenID >= sc.vocabSize {
 		return nil
 	}

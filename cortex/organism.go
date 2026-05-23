@@ -173,15 +173,17 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		// FractalCortex: Infinite growing MoC ALBERT layers
 		FractalCortex: NewFractalCortex(cfg, engine),
 
-		// RadioCortex: frequency-based neural processor (configurable, default 1M neurons)
-		RadioCortex: NewRadioCortex(cfg.RadioNeuronCount, rng),
-		SignalCodec: NewSignalCodec(1000), // initial vocab, grows dynamically
-
 		Sensory: NewSensorySystem(encoder, cfg),
 		Motor:   NewMotorSystem(cfg),
 		Rhythm:  NewRhythmEngine(cfg),
 
 		Rng: rng,
+	}
+
+	// Only create RadioCortex if enabled
+	if cfg.RadioCortexEnabled {
+		org.RadioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
+		org.SignalCodec = NewSignalCodec(1000) // initial vocab, grows dynamically
 	}
 
 	// Initialize NeuroRadioCortex if enabled
@@ -1194,6 +1196,13 @@ func (o *Organism) Save(dataDir string) error {
 		}
 	}
 
+	// 14. NeuroRadioCortex tiles.
+	if o.NeuroRadio != nil {
+		if err := SaveNeuroRadioCortex(o.NeuroRadio, filepath.Join(dataDir, "neuro_radio.nxnr")); err != nil {
+			return fmt.Errorf("organism save neuro-radio cortex: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1344,25 +1353,45 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 	// 13. RadioCortex — load from disk, fall back to fresh if missing.
 	var radioCortex *RadioCortex
 	var signalCodec *SignalCodec
-	radioPath := filepath.Join(cfg.DataDir, "radio_cortex.nxrc")
-	if _, err := os.Stat(radioPath); err == nil {
-		rc, sc, loadErr := LoadRadioCortex(radioPath)
-		if loadErr != nil {
-			fmt.Printf("[RadioCortex] Load failed (%v), starting fresh.\n", loadErr)
+	if cfg.RadioCortexEnabled {
+		radioPath := filepath.Join(cfg.DataDir, "radio_cortex.nxrc")
+		if _, err := os.Stat(radioPath); err == nil {
+			rc, sc, loadErr := LoadRadioCortex(radioPath)
+			if loadErr != nil {
+				fmt.Printf("[RadioCortex] Load failed (%v), starting fresh.\n", loadErr)
+				radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
+				signalCodec = NewSignalCodec(1000)
+			} else {
+				radioCortex = rc
+				if sc != nil {
+					signalCodec = sc
+				} else {
+					signalCodec = NewSignalCodec(1000)
+				}
+				fmt.Printf("[RadioCortex] Restored %d neurons (tick %d) from disk.\n", rc.Size, rc.TickCount)
+			}
+		} else {
 			radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
 			signalCodec = NewSignalCodec(1000)
-		} else {
-			radioCortex = rc
-			if sc != nil {
-				signalCodec = sc
-			} else {
-				signalCodec = NewSignalCodec(1000)
-			}
-			fmt.Printf("[RadioCortex] Restored %d neurons (tick %d) from disk.\n", rc.Size, rc.TickCount)
 		}
-	} else {
-		radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
-		signalCodec = NewSignalCodec(1000)
+	}
+
+	// 14. NeuroRadioCortex — load from disk if enabled.
+	var neuroRadio *NeuroRadioCortex
+	if cfg.NeuroRadioEnabled {
+		nrPath := filepath.Join(cfg.DataDir, "neuro_radio.nxnr")
+		if _, err := os.Stat(nrPath); err == nil {
+			nrc, loadErr := LoadNeuroRadioCortex(nrPath)
+			if loadErr != nil {
+				fmt.Printf("[NeuroRadio] Load failed (%v), starting fresh.\n", loadErr)
+				neuroRadio = NewNeuroRadioCortex(cfg.RadioNeuronCount, rng)
+			} else {
+				neuroRadio = nrc
+				fmt.Printf("[NeuroRadio] Restored %d tiles (tick %d) from disk.\n", nrc.Size, nrc.TickCount)
+			}
+		} else {
+			neuroRadio = NewNeuroRadioCortex(cfg.RadioNeuronCount, rng)
+		}
 	}
 
 	// 8. Broca 2.0 — Load BPE tokenizer and MiniTransformer (optional)
@@ -1418,6 +1447,9 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		// RadioCortex: frequency-based neural processor (restored or fresh)
 		RadioCortex: radioCortex,
 		SignalCodec: signalCodec,
+
+		// NeuroRadioCortex: unified architecture (restored or fresh)
+		NeuroRadio: neuroRadio,
 
 		// Broca 2.0: Transformer language model (nil if no tokenizer on disk)
 		Transformer: miniTransformer,

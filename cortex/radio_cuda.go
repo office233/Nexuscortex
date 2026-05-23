@@ -80,27 +80,76 @@ func NewRadioCUDA(numNeurons int) *RadioCUDA {
 		numNeurons: numNeurons,
 	}
 
-	// Load all function pointers
+	// Load all function pointers — check each for errors
 	var err error
+	var missingProcs []string
+
 	rc.fnInit, err = dll.FindProc("radio_cuda_init")
 	if err != nil {
 		fmt.Printf("[RadioCUDA] Missing function radio_cuda_init: %v\n", err)
 		dll.Release()
 		return nil
 	}
-	rc.fnCleanup, _ = dll.FindProc("radio_cuda_cleanup")
-	rc.fnUploadNeurons, _ = dll.FindProc("radio_cuda_upload_neurons")
-	rc.fnDownloadNeurons, _ = dll.FindProc("radio_cuda_download_neurons")
-	rc.fnUploadBus, _ = dll.FindProc("radio_cuda_upload_bus")
-	rc.fnDownloadBus, _ = dll.FindProc("radio_cuda_download_bus")
-	rc.fnStep, _ = dll.FindProc("radio_cuda_step")
-	rc.fnStepN, _ = dll.FindProc("radio_cuda_step_n")
-	rc.fnInject, _ = dll.FindProc("radio_cuda_inject")
-	rc.fnClearBus, _ = dll.FindProc("radio_cuda_clear_bus")
-	rc.fnStats, _ = dll.FindProc("radio_cuda_stats")
-	rc.fnHebbian, _ = dll.FindProc("radio_cuda_hebbian")
-	rc.fnDecodeToken, _ = dll.FindProc("radio_cuda_decode_token")
-	rc.fnDecodeTopK, _ = dll.FindProc("radio_cuda_decode_top_k")
+
+	rc.fnCleanup, err = dll.FindProc("radio_cuda_cleanup")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_cleanup")
+	}
+	rc.fnUploadNeurons, err = dll.FindProc("radio_cuda_upload_neurons")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_upload_neurons")
+	}
+	rc.fnDownloadNeurons, err = dll.FindProc("radio_cuda_download_neurons")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_download_neurons")
+	}
+	rc.fnUploadBus, err = dll.FindProc("radio_cuda_upload_bus")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_upload_bus")
+	}
+	rc.fnDownloadBus, err = dll.FindProc("radio_cuda_download_bus")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_download_bus")
+	}
+	rc.fnStep, err = dll.FindProc("radio_cuda_step")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_step")
+	}
+	rc.fnStepN, err = dll.FindProc("radio_cuda_step_n")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_step_n")
+	}
+	rc.fnInject, err = dll.FindProc("radio_cuda_inject")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_inject")
+	}
+	rc.fnClearBus, err = dll.FindProc("radio_cuda_clear_bus")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_clear_bus")
+	}
+	rc.fnStats, err = dll.FindProc("radio_cuda_stats")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_stats")
+	}
+	rc.fnHebbian, err = dll.FindProc("radio_cuda_hebbian")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_hebbian")
+	}
+	rc.fnDecodeToken, err = dll.FindProc("radio_cuda_decode_token")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_decode_token")
+	}
+	rc.fnDecodeTopK, err = dll.FindProc("radio_cuda_decode_top_k")
+	if err != nil {
+		missingProcs = append(missingProcs, "radio_cuda_decode_top_k")
+	}
+
+	// If any required symbols are missing, mark CUDA as unavailable
+	if len(missingProcs) > 0 {
+		fmt.Printf("[RadioCUDA] ⚠️  Missing %d symbols: %v — falling back to CPU.\n", len(missingProcs), missingProcs)
+		dll.Release()
+		return nil
+	}
 
 	// Initialize GPU memory
 	ret, _, _ := rc.fnInit.Call(uintptr(numNeurons))

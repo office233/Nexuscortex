@@ -96,20 +96,51 @@ func TestResonance(t *testing.T) {
 	}
 
 	// Slightly out of phase but still positive
-	r16 := Resonance(66, 50) // delta=16
+	// delta7=16, delta8=32 → cos(32*360/256) = cos(45°) ≈ +90
+	r16 := Resonance(66, 50) // delta=16 in 7-bit
 	t.Logf("Delta 16 resonance: %d", r16)
 	if r16 <= 0 {
-		t.Errorf("Small delta should still be positive, got %d", r16)
+		t.Errorf("Small 7-bit delta should still be positive, got %d", r16)
 	}
 
-	// 90° in cos256 table: delta=64 → near zero
-	r64 := Resonance(114, 50) // delta=64
-	t.Logf("Delta 64 resonance: %d (should be near zero)", r64)
+	// 90° in 7-bit = delta7=32, delta8=64 → cos(90°) ≈ 0
+	r32 := Resonance(82, 50) // delta=32 in 7-bit
+	t.Logf("Delta 32 resonance (7-bit 90°): %d (should be near zero)", r32)
+	if r32 > 10 || r32 < -10 {
+		t.Errorf("90° apart (7-bit delta=32) should be ~0, got %d", r32)
+	}
+
+	// 180° in 7-bit = delta7=64, delta8=128 → cos(180°) ≈ -127
+	r64 := Resonance(114, 50) // delta=64 in 7-bit
+	t.Logf("Delta 64 resonance (7-bit 180°): %d (should be ~-127)", r64)
+	if r64 > -100 {
+		t.Errorf("180° apart (7-bit delta=64) should be ~-127, got %d", r64)
+	}
 
 	// Large delta should wrap via uint8 subtraction
 	// and produce valid resonance values (no crash)
 	rWrap := Resonance(10, 100) // delta wraps
 	t.Logf("Wrap resonance (10-100): %d", rWrap)
+}
+
+func TestResonance7Bit(t *testing.T) {
+	// Same phase = max resonance
+	r := Resonance(0, 0)
+	if r < 120 {
+		t.Errorf("Same phase should be ~127, got %d", r)
+	}
+
+	// Half cycle apart (64 in 7-bit = 180°) = anti-resonance
+	r2 := Resonance(64, 0)
+	if r2 > -120 {
+		t.Errorf("180° apart should be ~-127, got %d", r2)
+	}
+
+	// Quarter cycle (32 in 7-bit = 90°) = near zero
+	r3 := Resonance(32, 0)
+	if r3 > 10 || r3 < -10 {
+		t.Errorf("90° apart should be ~0, got %d", r3)
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════

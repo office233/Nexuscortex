@@ -133,13 +133,6 @@ func (rc *RadioCortex) Step() int {
 	for i := range rc.Neurons {
 		n := &rc.Neurons[i]
 
-		// Skip refractory neurons (just fired, cooling down)
-		if n.IsRefractory() {
-			n.SetRefractory(false) // clear for next tick
-			n.AdvancePhase()       // keep oscillating
-			continue
-		}
-
 		// Skip dead neurons
 		if !n.IsAlive() {
 			continue
@@ -162,7 +155,6 @@ func (rc *RadioCortex) Step() int {
 		// Fire if activation exceeds threshold
 		if activation > rc.FireThreshold || activation < -rc.FireThreshold {
 			rc.Fired[i] = true
-			n.SetRefractory(true)
 			firedCount++
 		}
 

@@ -64,7 +64,8 @@ func main() {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	cfg := cortex.DefaultConfig()
 	cfg.DataDir = "./data/cortex-training"
-	cfg.NeuroRadioEnabled = true // 🔥 Enable unified architecture
+	cfg.RadioCortexEnabled = true // Enable RadioCortex
+	cfg.NeuroRadioEnabled = true  // 🔥 Enable unified architecture
 
 	// ══════════════════════════════════════════════════════════
 	// LOAD EXTERNAL TRAINING DATA
@@ -104,14 +105,17 @@ func main() {
 	fmt.Println("  🔬 Creating organism...")
 	startTime := time.Now()
 	org := cortex.NewOrganism(cfg, rng)
-	fmt.Printf("  ✅ Organism alive. RadioCortex: %d neurons (%.1f MB)\n",
-		org.RadioCortex.Size, float64(org.RadioCortex.Size*4)/(1024*1024))
-
-	// Try GPU
-	if org.RadioCortex.InitGPU() {
-		fmt.Println("  🚀 GPU CUDA acceleration: ENABLED")
+	if org.RadioCortex != nil {
+		fmt.Printf("  ✅ Organism alive. RadioCortex: %d neurons (%.1f MB)\n",
+			org.RadioCortex.Size, float64(org.RadioCortex.Size*4)/(1024*1024))
+		// Try GPU
+		if org.RadioCortex.InitGPU() {
+			fmt.Println("  🚀 GPU CUDA acceleration: ENABLED")
+		} else {
+			fmt.Println("  💻 Using CPU (no CUDA DLL found)")
+		}
 	} else {
-		fmt.Println("  💻 Using CPU (no CUDA DLL found)")
+		fmt.Println("  ✅ Organism alive. RadioCortex: disabled")
 	}
 	fmt.Printf("  ⏱  Init time: %v\n\n", time.Since(startTime))
 
@@ -172,7 +176,7 @@ func main() {
 			for i, idx := range perm {
 				qa := qaCorpus[idx]
 				org.LearnQA(qa.Q, qa.A)
-				if (i+1)%30 == 0 {
+				if (i+1)%30 == 0 && org.RadioCortex != nil {
 					stats := org.RadioCortex.Stats()
 					fmt.Printf("     [%3d/%d] Radio ticks: %d | alive: %d | avg amp: %d\n",
 						i+1, len(qaCorpus), stats.TickCount, stats.AliveNeurons, stats.AvgAmplitude)
@@ -189,9 +193,11 @@ func main() {
 		}
 
 		fmt.Printf("\n  ✅ Training complete in %v\n", time.Since(phase2Start))
-		radioStats := org.RadioCortex.Stats()
-		fmt.Printf("     Radio ticks: %d | Alive: %d/%d | Avg amplitude: %d\n\n",
-			radioStats.TickCount, radioStats.AliveNeurons, radioStats.TotalNeurons, radioStats.AvgAmplitude)
+		if org.RadioCortex != nil {
+			radioStats := org.RadioCortex.Stats()
+			fmt.Printf("     Radio ticks: %d | Alive: %d/%d | Avg amplitude: %d\n\n",
+				radioStats.TickCount, radioStats.AliveNeurons, radioStats.TotalNeurons, radioStats.AvgAmplitude)
+		}
 	}
 
 	// ══════════════════════════════════════════════════════════
@@ -319,15 +325,17 @@ func main() {
 	fmt.Println("└──────────────────────────────────────────────────────────────┘")
 
 	stats := org.Stats()
-	radioFinal := org.RadioCortex.Stats()
 
 	fmt.Printf("  🧠 Hippocampus memories : %d\n", stats.HippocampusMemories)
 	fmt.Printf("  🗣  Broca patterns       : %d\n", stats.BrocaPatterns)
 	fmt.Printf("  👂 Wernicke rules        : %d\n", stats.WernickeNGrams)
 	fmt.Printf("  🎯 Prefrontal synapses   : %d\n", stats.PrefrontalSynapses)
-	fmt.Printf("  📡 Radio neurons         : %d (alive: %d)\n", radioFinal.TotalNeurons, radioFinal.AliveNeurons)
-	fmt.Printf("  📡 Radio ticks           : %d\n", radioFinal.TickCount)
-	fmt.Printf("  📡 Radio avg amplitude   : %d / 255\n", radioFinal.AvgAmplitude)
+	if org.RadioCortex != nil {
+		radioFinal := org.RadioCortex.Stats()
+		fmt.Printf("  📡 Radio neurons         : %d (alive: %d)\n", radioFinal.TotalNeurons, radioFinal.AliveNeurons)
+		fmt.Printf("  📡 Radio ticks           : %d\n", radioFinal.TickCount)
+		fmt.Printf("  📡 Radio avg amplitude   : %d / 255\n", radioFinal.AvgAmplitude)
+	}
 
 	if org.NeuroRadio != nil {
 		nrFinal := org.NeuroRadio.Stats()

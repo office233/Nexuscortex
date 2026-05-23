@@ -238,6 +238,7 @@ type Config struct {
 	QuantumMultiSamples    int   `json:"quantum_multi_samples"`     // Multi-sample passes (1=no multi-sample)
 
 	// RadioCortex configuration
+	RadioCortexEnabled bool   `json:"radio_cortex_enabled"` // Enable RadioCortex (default false)
 	RadioNeuronCount  int    `json:"radio_neuron_count"`  // Number of radio neurons (default 1_000_000)
 	TrainingDataDir   string `json:"training_data_dir"`   // Directory with qa.json and texts.txt
 	NeuroRadioEnabled bool   `json:"neuro_radio_enabled"` // Enable NeuroRadioCortex (unified architecture)

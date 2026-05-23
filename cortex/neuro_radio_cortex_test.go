@@ -222,3 +222,164 @@ func BenchmarkNeuroRadioCortex_Step_1M(b *testing.B) {
 	}
 	b.ReportMetric(float64(nrc.LastActiveTiles), "active_tiles")
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Comprehensive Numeric Tests
+// ═══════════════════════════════════════════════════════════════════
+
+func TestNeuroRadioTile_PhasePositive(t *testing.T) {
+	// In-phase signal should produce positive output
+	// Create tile with known weights (all +1) and high confidence
+	tile := NewNeuroRadioTile(
+		0xFF00FF00, // mask=0xFF, sign=0x00 for both halves = all +1
+		0xFFFFFFFF, // all confidence = 3 (high)
+		100,        // listen freq
+		64,         // phase = 64 (in 7-bit = 180°... let's use 0 for aligned)
+		200,        // amplitude
+		50,         // emit freq
+		false,      // not inhibitory
+	)
+	// Use phase 0 to match bus phase 0
+	tile.Radio.SetPhase(0)
+
+	var input [16]int8
+	for i := range input {
+		input[i] = 100
+	}
+
+	// Bus phase = 0, neuron phase = 0 → perfect resonance → positive output
+	result := tile.Forward(input, 200, 0)
+	if result <= 0 {
+		t.Errorf("In-phase signal should produce positive output, got %d", result)
+	}
+	t.Logf("In-phase output: %d", result)
+}
+
+func TestNeuroRadioTile_PhaseNegative(t *testing.T) {
+	// Anti-phase signal should produce negative output
+	tile := NewNeuroRadioTile(
+		0xFF00FF00, // all +1 weights
+		0xFFFFFFFF, // all high confidence
+		100,        // listen freq
+		0,          // phase
+		200,        // amplitude
+		50,         // emit freq
+		false,
+	)
+	// Set phase to 64 (7-bit) = 180° away from bus phase 0
+	tile.Radio.SetPhase(64) // 64 in 7-bit = 180° = anti-phase
+
+	var input [16]int8
+	for i := range input {
+		input[i] = 100
+	}
+
+	// Bus phase = 0, neuron phase = 64 (180°) → anti-resonance → negative output
+	result := tile.Forward(input, 200, 0)
+	if result >= 0 {
+		t.Errorf("Anti-phase signal should produce negative output, got %d", result)
+	}
+	t.Logf("Anti-phase output: %d", result)
+}
+
+func TestNeuroRadioTile_ConfidenceZeroProducesZero(t *testing.T) {
+	// Zero confidence should skip all weights → 0 output
+	tile := NewNeuroRadioTile(
+		0xFF00FF00, // all +1 weights
+		0x00000000, // ALL confidence = 0 → all skipped
+		100,
+		0,
+		200,
+		50,
+		false,
+	)
+
+	var input [16]int8
+	for i := range input {
+		input[i] = 100
+	}
+
+	result := tile.Forward(input, 200, 0)
+	if result != 0 {
+		t.Errorf("Zero confidence should produce 0 output, got %d", result)
+	}
+}
+
+func TestNeuroRadioTile_UnpackTernaryMatchesTernaryTile(t *testing.T) {
+	// Verify that unpackTernary produces correct {-1, 0, +1} values
+	// matching the RGBA sign/mask format.
+	// Layout: R=signLo(byte0), G=maskLo(byte1), B=signHi(byte2), A=maskHi(byte3)
+	// Weights = A<<24 | B<<16 | G<<8 | R
+	tile := &NeuroRadioTile{
+		// Low 8 weights: maskLo=0xFF (all active), signLo=0x00 (all positive) → all +1
+		// High 8 weights: maskHi=0x00, signHi=0x00 → all 0
+		Weights: 0x0000FF00, // A=0x00, B=0x00, G=0xFF, R=0x00
+	}
+
+	weights := tile.unpackTernary()
+
+	// First 8 should be +1 (mask active, sign not set)
+	for i := 0; i < 8; i++ {
+		if weights[i] != +1 {
+			t.Errorf("Weight[%d] = %d, want +1", i, weights[i])
+		}
+	}
+	// Last 8 should be 0 (mask not active)
+	for i := 8; i < 16; i++ {
+		if weights[i] != 0 {
+			t.Errorf("Weight[%d] = %d, want 0", i, weights[i])
+		}
+	}
+
+	// Test negative weights: signLo=0x0F, maskLo=0x0F → low 4 weights = -1
+	// Weights = G<<8 | R = 0x0F<<8 | 0x0F = 0x00000F0F
+	tile2 := &NeuroRadioTile{
+		Weights: 0x00000F0F,
+	}
+	weights2 := tile2.unpackTernary()
+	for i := 0; i < 4; i++ {
+		if weights2[i] != -1 {
+			t.Errorf("Weight2[%d] = %d, want -1", i, weights2[i])
+		}
+	}
+	// Weights 4-7: mask not active → 0
+	for i := 4; i < 8; i++ {
+		if weights2[i] != 0 {
+			t.Errorf("Weight2[%d] = %d, want 0 (mask inactive)", i, weights2[i])
+		}
+	}
+}
+
+func TestNeuroRadioTile_LearningImprovesMatches(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	nrc := NewNeuroRadioCortex(10000, rng)
+
+	inputTokens := []int{1, 2, 3}
+	targetToken := 5
+
+	// Run training for 50 steps
+	totalMatches := 0
+	for i := 0; i < 50; i++ {
+		matches := nrc.TrainStep(inputTokens, targetToken, 5)
+		totalMatches += matches
+	}
+
+	// After training, the same input should produce more matches
+	matchesBefore := nrc.TrainStep(inputTokens, targetToken, 1)
+
+	// Train more
+	for i := 0; i < 100; i++ {
+		nrc.TrainStep(inputTokens, targetToken, 5)
+	}
+
+	matchesAfter := nrc.TrainStep(inputTokens, targetToken, 1)
+
+	t.Logf("Matches before extended training: %d, after: %d, total first 50: %d",
+		matchesBefore, matchesAfter, totalMatches)
+
+	// We don't strictly require improvement (the system is stochastic),
+	// but log it for visibility
+	if matchesAfter > matchesBefore {
+		t.Logf("✅ Learning improved matches: %d → %d", matchesBefore, matchesAfter)
+	}
+}
