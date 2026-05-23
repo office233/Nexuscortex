@@ -41,6 +41,19 @@ func DefaultTransformerConfig(vocabSize int) TransformerConfig {
 	}
 }
 
+// TransformerConfigFromConfig creates a TransformerConfig using values from the
+// central Config, allowing all hyperparameters to be overridden via JSON config.
+func TransformerConfigFromConfig(vocabSize int, cfg Config) TransformerConfig {
+	return TransformerConfig{
+		VocabSize:  vocabSize,
+		EmbedDim:   cfg.TransformerEmbedDim,
+		NumHeads:   cfg.TransformerNumHeads,
+		NumLayers:  cfg.TransformerNumLayers,
+		FFNDim:     cfg.TransformerFFNDim,
+		MaxSeqLen:  cfg.TransformerMaxSeqLen,
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Multi-Head Self-Attention
 // ─────────────────────────────────────────────────────────────────────

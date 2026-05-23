@@ -8,6 +8,39 @@ import (
 	"sync/atomic"
 )
 
+// Architecture constants for quantum-inspired tiles.
+const (
+	// QuantumAmplitudeFull represents full certainty (classical behavior).
+	QuantumAmplitudeFull uint8 = 255
+
+	// QuantumAmplitudeNeutral is the default neutral amplitude for new experts.
+	QuantumAmplitudeNeutral uint8 = 128
+
+	// QuantumCosRange is the range of cos256 table values ([-127, +127]).
+	QuantumCosRange = 127
+
+	// QuantumPhaseCount is the number of discrete phase values (uint8 range).
+	QuantumPhaseCount = 256
+
+	// QuantumAmplitudeAdjust is the per-update amplitude change for experts.
+	QuantumAmplitudeAdjust uint8 = 5
+
+	// QuantumTileAmplitudeStep is the per-update amplitude step for tile updates.
+	QuantumTileAmplitudeStep uint8 = 3
+
+	// SigmoidSaturationPos is the positive saturation output of fastSigmoid256.
+	SigmoidSaturationPos uint8 = 250
+
+	// SigmoidSaturationNeg is the negative saturation output of fastSigmoid256.
+	SigmoidSaturationNeg uint8 = 5
+
+	// SigmoidSaturationThreshold is the input magnitude where sigmoid saturates.
+	SigmoidSaturationThreshold int16 = 512
+
+	// MultiSampleMaxSamples caps the number of samples in MultiSampleForward.
+	MultiSampleMaxSamples = 16
+)
+
 // ─────────────────────────────────────────────────────────────────────
 // Quantum-Inspired NeuroTexture Engine
 // ─────────────────────────────────────────────────────────────────────
@@ -49,7 +82,7 @@ type QuantumTile struct {
 func NewQuantumTile(t TernaryTile) QuantumTile {
 	return QuantumTile{
 		Weights:   t,
-		Amplitude: 255, // fully certain
+		Amplitude: QuantumAmplitudeFull, // fully certain
 		Phase:     0,   // no phase shift
 	}
 }
@@ -92,7 +125,7 @@ func NewQuantumTernaryLayer(base *TernaryLayer) *QuantumTernaryLayer {
 	amps := make([]uint8, n)
 	phases := make([]uint8, n)
 	for i := range amps {
-		amps[i] = 255 // fully certain — classical behavior
+		amps[i] = QuantumAmplitudeFull // fully certain — classical behavior
 	}
 	return &QuantumTernaryLayer{
 		Base:       base,
@@ -185,7 +218,7 @@ func (q *QuantumTernaryLayer) AmplitudeStats() (min, max uint8, mean float64) {
 	if len(q.Amplitudes) == 0 {
 		return 0, 0, 0
 	}
-	min = 255
+	min = QuantumAmplitudeFull
 	max = 0
 	var sum uint64
 	for _, a := range q.Amplitudes {
@@ -328,7 +361,7 @@ func NewQuantumRouter(numExperts, sdrSize, topK int) *QuantumRouter {
 	amps := make([]uint8, numExperts)
 	embeddings := make([]SDR, numExperts)
 	for i := range amps {
-		amps[i] = 128 // initial neutral amplitude
+		amps[i] = QuantumAmplitudeNeutral // initial neutral amplitude
 		embeddings[i] = NewSDR(sdrSize)
 	}
 	return &QuantumRouter{
@@ -464,8 +497,8 @@ func (r *QuantumRouter) UpdateExpertPhase(expertIdx int, inputPhase uint8, rewar
 		r.ExpertPhases[expertIdx] += uint8(diff / 4) // gradual alignment
 
 		// Increase amplitude (more confident)
-		if r.ExpertAmps[expertIdx] < 250 {
-			r.ExpertAmps[expertIdx] += 5
+		if r.ExpertAmps[expertIdx] < (QuantumAmplitudeFull - QuantumAmplitudeAdjust) {
+			r.ExpertAmps[expertIdx] += QuantumAmplitudeAdjust
 		}
 	} else {
 		// Move phase away (destructive)
@@ -473,8 +506,8 @@ func (r *QuantumRouter) UpdateExpertPhase(expertIdx int, inputPhase uint8, rewar
 		r.ExpertPhases[expertIdx] -= uint8(diff / 8) // gradual misalignment
 
 		// Decrease amplitude
-		if r.ExpertAmps[expertIdx] > 5 {
-			r.ExpertAmps[expertIdx] -= 5
+		if r.ExpertAmps[expertIdx] > QuantumAmplitudeAdjust {
+			r.ExpertAmps[expertIdx] -= QuantumAmplitudeAdjust
 		}
 	}
 }
@@ -509,8 +542,8 @@ func MultiSampleForward(
 	if numSamples < 1 {
 		numSamples = 1
 	}
-	if numSamples > 16 {
-		numSamples = 16
+	if numSamples > MultiSampleMaxSamples {
+		numSamples = MultiSampleMaxSamples
 	}
 
 	dim := layer.Base.OutputSize
@@ -641,15 +674,15 @@ func (q *QuantumTernaryLayer) UpdateAmplitudes(
 
 		if correct {
 			// Increase amplitude (tile contributed to correct answer)
-			if q.Amplitudes[tileIdx] < 252 {
-				q.Amplitudes[tileIdx] += 3
+				if q.Amplitudes[tileIdx] < (QuantumAmplitudeFull - QuantumTileAmplitudeStep) {
+				q.Amplitudes[tileIdx] += QuantumTileAmplitudeStep
 			} else {
-				q.Amplitudes[tileIdx] = 255
+				q.Amplitudes[tileIdx] = QuantumAmplitudeFull
 			}
 		} else {
 			// Decrease amplitude (tile contributed to wrong answer)
-			if q.Amplitudes[tileIdx] > 3 {
-				q.Amplitudes[tileIdx] -= 3
+			if q.Amplitudes[tileIdx] > QuantumTileAmplitudeStep {
+				q.Amplitudes[tileIdx] -= QuantumTileAmplitudeStep
 			} else {
 				q.Amplitudes[tileIdx] = 0
 			}
@@ -664,11 +697,11 @@ func (q *QuantumTernaryLayer) UpdateAmplitudes(
 // fastSigmoid256 approximates sigmoid(x/256) scaled to [0, 255].
 // Uses piecewise linear approximation for speed.
 func fastSigmoid256(x int16) uint8 {
-	if x >= 512 {
-		return 250
+	if x >= SigmoidSaturationThreshold {
+		return SigmoidSaturationPos
 	}
-	if x <= -512 {
-		return 5
+	if x <= -SigmoidSaturationThreshold {
+		return SigmoidSaturationNeg
 	}
 	// Linear region: sigmoid ≈ 0.5 + x/4 in the middle
 	return uint8(128 + int32(x)/4)

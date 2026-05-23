@@ -38,6 +38,14 @@ type RadioCortex struct {
 	FireThreshold int32 // minimum activation to fire (default 64)
 	PhaseWindow   uint8 // phase match tolerance (default 90 = ~127°)
 
+	// Configurable parameters from central Config (set during construction)
+	TrainAmplitude      int // EncodeTokens amplitude for training/generation
+	ResonanceThreshold  int // Resonance threshold for input activation
+	WeakNeuronThreshold int // Weak neuron frequency drift threshold
+	GenerateWindowSize  int // Generation context window size
+	AntiLoopMaxRepeat   int // Anti-loop repetition max
+	DecodeTopK          int // DecodeTopK fallback k
+
 	// GPU acceleration (nil = CPU fallback)
 	GPU *RadioCUDA
 
@@ -80,6 +88,13 @@ func NewRadioCortex(size int, rng *rand.Rand) *RadioCortex {
 		OutputEnd:     size,
 		FireThreshold: 64,
 		PhaseWindow:   90,
+		// Configurable defaults (overridden by Organism from Config)
+		TrainAmplitude:      200,
+		ResonanceThreshold:  20,
+		WeakNeuronThreshold: 32,
+		GenerateWindowSize:  8,
+		AntiLoopMaxRepeat:   2,
+		DecodeTopK:          5,
 		rng:           rng,
 	}
 

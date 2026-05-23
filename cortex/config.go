@@ -242,6 +242,50 @@ type Config struct {
 	RadioNeuronCount  int    `json:"radio_neuron_count"`  // Number of radio neurons (default 1_000_000)
 	TrainingDataDir   string `json:"training_data_dir"`   // Directory with qa.json and texts.txt
 	NeuroRadioEnabled bool   `json:"neuro_radio_enabled"` // Enable NeuroRadioCortex (unified architecture)
+
+	// SignalCodec configuration
+	SignalCodecInitVocab  int `json:"signal_codec_init_vocab"`   // Initial vocab size for SignalCodec (default 1000)
+	SignalCodecFreqsPerTk int `json:"signal_codec_freqs_per_tk"` // Frequencies per token (default 13)
+	SignalCodecMaxFreqs   int `json:"signal_codec_max_freqs"`    // Max frequencies per token cap (default 64)
+
+	// RadioCortex generation/training
+	RadioTrainAmplitude      int `json:"radio_train_amplitude"`       // Amplitude for training/generation (default 200)
+	RadioResonanceThreshold  int `json:"radio_resonance_threshold"`   // Resonance threshold for input activation (default 20)
+	RadioWeakNeuronThreshold int `json:"radio_weak_neuron_threshold"` // Weak neuron frequency drift threshold (default 32)
+	RadioGenerateWindowSize  int `json:"radio_generate_window_size"`  // Generation context window size (default 8)
+	RadioAntiLoopMaxRepeat   int `json:"radio_anti_loop_max_repeat"`  // Anti-loop repetition max (default 2)
+	RadioDecodeTopK          int `json:"radio_decode_top_k"`          // Decode top-K fallback k (default 5)
+
+	// NeuroRadioCortex
+	NRCDecodeActiveThreshold int `json:"nrc_decode_active_threshold"` // ActiveChannels threshold in Decode (default 5)
+	NRCInitAmpMin            int `json:"nrc_init_amp_min"`            // Initial amplitude minimum (default 100)
+	NRCInitAmpRange          int `json:"nrc_init_amp_range"`          // Initial amplitude range (default 156)
+	NRCInhibitoryRatioDiv    int `json:"nrc_inhibitory_ratio_div"`    // Inhibitory ratio divisor: 1/N (default 5 → 20%)
+	NRCInjectAmplitude       int `json:"nrc_inject_amplitude"`        // Inject amplitude for ProcessInput/TrainStep (default 200)
+
+	// FractalCortex
+	FractalNumLayers             int     `json:"fractal_num_layers"`              // Layers per cortex block (default 24)
+	FractalContextLen            int     `json:"fractal_context_len"`             // Attention context length (default 50)
+	FractalTopK                  int     `json:"fractal_top_k"`                   // Top-K for SharedCortexStack (default 3)
+	FractalDecayRate             int     `json:"fractal_decay_rate"`              // LinearScan decay rate (default 64)
+	FractalPerturbRate           int     `json:"fractal_perturb_rate"`            // Perturbation rate 0-255 (default 25)
+	FractalNeurogenesisThreshold float64 `json:"fractal_neurogenesis_threshold"` // Error threshold for spawning blocks (default 0.8)
+	FractalMaxBlocks             int     `json:"fractal_max_blocks"`             // Max cortex blocks (default 8)
+
+	// Self-Training
+	SelfEvolveLearningRate float64 `json:"self_evolve_lr"`         // Learning rate for self-evolution (default 0.0001)
+	SelfEvolveBatchSize    int     `json:"self_evolve_batch_size"` // Batch size per sleep cycle (default 50)
+	BPEMaxLinesPerFile     int     `json:"bpe_max_lines_per_file"` // Max lines per file for BPE training (default 10000)
+
+	// Transformer defaults
+	TransformerEmbedDim  int `json:"transformer_embed_dim"`   // Hidden dimension (default 256)
+	TransformerNumHeads  int `json:"transformer_num_heads"`   // Attention heads (default 4)
+	TransformerNumLayers int `json:"transformer_num_layers"`  // Transformer blocks (default 4)
+	TransformerFFNDim    int `json:"transformer_ffn_dim"`     // FFN inner dimension (default 1024)
+	TransformerMaxSeqLen int `json:"transformer_max_seq_len"` // Max sequence length (default 512)
+
+	// Autonomous learner
+	AutoLowConfThreshold int `json:"auto_low_conf_threshold"` // Low confidence threshold (default 100)
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -495,6 +539,50 @@ func DefaultConfig() Config {
 		// RadioCortex defaults
 		RadioNeuronCount: 1_000_000, // 1M neurons (was hardcoded 100K)
 		TrainingDataDir:  "./data/training",
+
+		// SignalCodec defaults
+		SignalCodecInitVocab:  1000,
+		SignalCodecFreqsPerTk: 13,
+		SignalCodecMaxFreqs:   64,
+
+		// RadioCortex generation/training defaults
+		RadioTrainAmplitude:      200,
+		RadioResonanceThreshold:  20,
+		RadioWeakNeuronThreshold: 32,
+		RadioGenerateWindowSize:  8,
+		RadioAntiLoopMaxRepeat:   2,
+		RadioDecodeTopK:          5,
+
+		// NeuroRadioCortex defaults
+		NRCDecodeActiveThreshold: 5,
+		NRCInitAmpMin:            100,
+		NRCInitAmpRange:          156,
+		NRCInhibitoryRatioDiv:    5,
+		NRCInjectAmplitude:       200,
+
+		// FractalCortex defaults
+		FractalNumLayers:             24,
+		FractalContextLen:            50,
+		FractalTopK:                  3,
+		FractalDecayRate:             64,
+		FractalPerturbRate:           25,
+		FractalNeurogenesisThreshold: 0.8,
+		FractalMaxBlocks:             8,
+
+		// Self-Training defaults
+		SelfEvolveLearningRate: 0.0001,
+		SelfEvolveBatchSize:    50,
+		BPEMaxLinesPerFile:     10000,
+
+		// Transformer defaults
+		TransformerEmbedDim:  256,
+		TransformerNumHeads:  4,
+		TransformerNumLayers: 4,
+		TransformerFFNDim:    1024,
+		TransformerMaxSeqLen: 512,
+
+		// Autonomous learner defaults
+		AutoLowConfThreshold: 100,
 	}
 }
 

@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 )
 
-// MaxFractalBlocks limits the maximum number of cortex blocks to prevent unbounded growth.
+// MaxFractalBlocks is the default maximum number of cortex blocks.
+// Override via Config.FractalMaxBlocks.
 const MaxFractalBlocks = 8
 
 // FractalCortex is a dynamically growing "Mixture of Cortexes" (MoC).
@@ -67,12 +68,12 @@ func (fc *FractalCortex) SpawnNeurogenesis() {
 
 	if len(fc.Blocks) == 0 {
 		// First block: create with fresh random weights
-		newBlock := NewSharedCortexStack(24, fc.Config.SDRSize, 50, 3, 64, fc.Engine)
+		newBlock := NewSharedCortexStack(fc.Config.FractalNumLayers, fc.Config.SDRSize, fc.Config.FractalContextLen, fc.Config.FractalTopK, uint8(fc.Config.FractalDecayRate), fc.Engine)
 		fc.Blocks = append(fc.Blocks, newBlock)
 	} else {
 		// Clone the most recent block's TRAINED weights
 		source := fc.Blocks[len(fc.Blocks)-1]
-		newBlock := NewSharedCortexStack(source.NumLayers, source.Dim, 50, source.TopK, 64, fc.Engine)
+		newBlock := NewSharedCortexStack(source.NumLayers, source.Dim, fc.Config.FractalContextLen, source.TopK, uint8(fc.Config.FractalDecayRate), fc.Engine)
 
 		// Copy trained weights from source → new block
 		copyTernaryWeights(source.SharedFeatureLayer, newBlock.SharedFeatureLayer)
@@ -90,8 +91,8 @@ func (fc *FractalCortex) SpawnNeurogenesis() {
 		}
 
 		// Apply perturbation: flip ~10% of ternary tiles for diversity
-		perturbTernaryLayer(newBlock.SharedFeatureLayer, 25) // 25/256 ≈ 10%
-		perturbTernaryLayer(newBlock.SharedOutputLayer, 25)
+		perturbTernaryLayer(newBlock.SharedFeatureLayer, uint8(fc.Config.FractalPerturbRate))
+		perturbTernaryLayer(newBlock.SharedOutputLayer, uint8(fc.Config.FractalPerturbRate))
 
 		fc.Blocks = append(fc.Blocks, newBlock)
 	}
@@ -272,11 +273,15 @@ func (fc *FractalCortex) ProcessTokenTopK(input SDR) SDR {
 // CheckPredictionError monitors the discrepancy between the prediction and reality.
 // If the error is consistently high, it triggers Neurogenesis to expand the physical parameter space.
 func (fc *FractalCortex) CheckPredictionError(errorMagnitude float64) {
-	if len(fc.Blocks) >= MaxFractalBlocks {
+	maxBlocks := fc.Config.FractalMaxBlocks
+	if maxBlocks <= 0 {
+		maxBlocks = MaxFractalBlocks
+	}
+	if len(fc.Blocks) >= maxBlocks {
 		return
 	}
 	// Threshold for spawning a new cortex block
-	if errorMagnitude > 0.8 && !fc.GrowthLock {
+	if errorMagnitude > fc.Config.FractalNeurogenesisThreshold && !fc.GrowthLock {
 		fc.SpawnNeurogenesis()
 		fc.GrowthLock = true // Reset via ResetGrowthLock() during Sleep()
 	}
@@ -299,12 +304,16 @@ func (fc *FractalCortex) Save(dataDir string) error {
 		NumLayers   int          `json:"num_layers"`
 		Dim         int          `json:"dim"`
 		TopK        int          `json:"top_k"`
+		ContextLen  int          `json:"context_len"`
+		DecayRate   int          `json:"decay_rate"`
 		QRouter     *qRouterMeta `json:"qrouter,omitempty"`
 	}
 	
-	numLayers := 24
+	numLayers := fc.Config.FractalNumLayers
 	dim := fc.Config.SDRSize
-	topK := 3
+	topK := fc.Config.FractalTopK
+	contextLen := fc.Config.FractalContextLen
+	decayRate := fc.Config.FractalDecayRate
 	if len(fc.Blocks) > 0 {
 		numLayers = fc.Blocks[0].NumLayers
 		dim = fc.Blocks[0].Dim
@@ -316,6 +325,8 @@ func (fc *FractalCortex) Save(dataDir string) error {
 		NumLayers:   numLayers,
 		Dim:         dim,
 		TopK:        topK,
+		ContextLen:  contextLen,
+		DecayRate:   decayRate,
 	}
 
 	// Persist QRouter state so learned phases/amps survive restart.
@@ -384,6 +395,8 @@ func (fc *FractalCortex) Load(dataDir string) error {
 		NumLayers   int          `json:"num_layers"`
 		Dim         int          `json:"dim"`
 		TopK        int          `json:"top_k"`
+		ContextLen  int          `json:"context_len"`
+		DecayRate   int          `json:"decay_rate"`
 		QRouter     *qRouterMeta `json:"qrouter,omitempty"`
 	}
 
@@ -392,8 +405,12 @@ func (fc *FractalCortex) Load(dataDir string) error {
 		return fmt.Errorf("fractal_cortex unmarshal meta: %w", err)
 	}
 
-	if meta.BlocksCount < 0 || meta.BlocksCount > MaxFractalBlocks {
-		return fmt.Errorf("invalid blocks_count: %d (max %d)", meta.BlocksCount, MaxFractalBlocks)
+	maxBlocks := fc.Config.FractalMaxBlocks
+	if maxBlocks <= 0 {
+		maxBlocks = MaxFractalBlocks
+	}
+	if meta.BlocksCount < 0 || meta.BlocksCount > maxBlocks {
+		return fmt.Errorf("invalid blocks_count: %d (max %d)", meta.BlocksCount, maxBlocks)
 	}
 	if meta.NumLayers <= 0 || meta.NumLayers > 64 {
 		return fmt.Errorf("invalid num_layers: %d", meta.NumLayers)
@@ -470,8 +487,14 @@ func (fc *FractalCortex) Load(dataDir string) error {
 			Scans:              make([]*LinearScanLayer, meta.NumLayers),
 		}
 
-		contextLen := 50
-		decayRate := uint8(64)
+		contextLen := meta.ContextLen
+		if contextLen <= 0 {
+			contextLen = fc.Config.FractalContextLen
+		}
+		decayRate := uint8(meta.DecayRate)
+		if meta.DecayRate <= 0 {
+			decayRate = uint8(fc.Config.FractalDecayRate)
+		}
 		for i := 0; i < meta.NumLayers; i++ {
 			block.Attentions[i] = NewSDRAttentionHead(meta.Dim, meta.Dim, contextLen)
 			block.Scans[i] = &LinearScanLayer{

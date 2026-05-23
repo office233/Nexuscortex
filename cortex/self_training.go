@@ -182,7 +182,7 @@ func (o *Organism) SelfEvolve() (memoriesTrainedOn int, corpusTrainedOn int, avg
 		return 0, 0, 0
 	}
 
-	lr := float32(0.0001) // Conservative learning rate for self-evolution
+	lr := float32(o.Config.SelfEvolveLearningRate) // Learning rate from config
 	totalLoss := float32(0)
 	totalSteps := 0
 
@@ -206,7 +206,7 @@ func (o *Organism) SelfEvolve() (memoriesTrainedOn int, corpusTrainedOn int, avg
 		}
 
 		// Small batch per sleep cycle to prevent catastrophic forgetting
-		batchSize := 50
+		batchSize := o.Config.SelfEvolveBatchSize
 		cLoss, cSteps, err := o.TrainTransformerFromCorpus(corpusPath, batchSize, lr)
 		if err == nil && cSteps > 0 {
 			totalLoss += cLoss * float32(cSteps)
@@ -248,7 +248,7 @@ func (o *Organism) InitBroca2(vocabSize int) error {
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 		count := 0
-		maxPerFile := 10000 // Cap per file for tokenizer training
+		maxPerFile := o.Config.BPEMaxLinesPerFile // Cap per file for tokenizer training
 		for scanner.Scan() {
 			if count >= maxPerFile {
 				break
@@ -283,7 +283,7 @@ func (o *Organism) InitBroca2(vocabSize int) error {
 		tokPath, tok.ActualVocabSize(), len(tok.Merges))
 
 	// Create transformer
-	tfCfg := DefaultTransformerConfig(tok.ActualVocabSize())
+	tfCfg := TransformerConfigFromConfig(tok.ActualVocabSize(), o.Config)
 	tf := NewMiniTransformer(tfCfg, o.Rng)
 	fmt.Printf("[InitBroca2] Transformer created (%d params, ~%.1fM)\n",
 		tf.ParamCount(), float64(tf.ParamCount())/1e6)

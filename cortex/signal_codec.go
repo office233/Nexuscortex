@@ -29,16 +29,20 @@ type SignalCodec struct {
 // 13/256 ≈ 5% density — sparse enough to distinguish tokens,
 // dense enough for overlap between related concepts.
 func NewSignalCodec(vocabSize int) *SignalCodec {
-	return NewSignalCodecCustom(vocabSize, 13)
+	return NewSignalCodecCustom(vocabSize, 13, 64)
 }
 
 // NewSignalCodecCustom creates a codec with a custom number of frequencies per token.
-func NewSignalCodecCustom(vocabSize, freqsPerToken int) *SignalCodec {
+// maxFreqs caps freqsPerToken to prevent over-saturation of the spectrum.
+func NewSignalCodecCustom(vocabSize, freqsPerToken, maxFreqs int) *SignalCodec {
 	if freqsPerToken < 1 {
 		freqsPerToken = 1
 	}
-	if freqsPerToken > 64 {
-		freqsPerToken = 64 // cap at 25% of spectrum
+	if maxFreqs < 1 {
+		maxFreqs = 64
+	}
+	if freqsPerToken > maxFreqs {
+		freqsPerToken = maxFreqs // cap at configured maximum
 	}
 
 	sc := &SignalCodec{

@@ -124,7 +124,11 @@ func (al *AutonomousLearner) AddGap(query string, confidence uint8) {
 // OnLowConfidence is called by Organism.Process() when confidence is low.
 // This feeds the curiosity loop automatically.
 func (al *AutonomousLearner) OnLowConfidence(input string, confidence uint8) {
-	if confidence < 100 { // Below ~40% confidence
+	threshold := uint8(100) // default
+	if al.Organism != nil && al.Organism.Config.AutoLowConfThreshold > 0 {
+		threshold = uint8(al.Organism.Config.AutoLowConfThreshold)
+	}
+	if confidence < threshold {
 		al.AddGap(input, confidence)
 	}
 }

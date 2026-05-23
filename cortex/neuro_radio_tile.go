@@ -20,6 +20,26 @@ package cortex
 //
 // Effective weight per micro-weight:
 //   output = ternary_value × confidence_gate × freq_match × phase_sign × amplitude
+// ─────────────────────────────────────────────────────────────────────
+// Architecture constants for NeuroRadioTile
+// ─────────────────────────────────────────────────────────────────────
+
+const (
+	// TileWeightCount is the number of ternary weights per tile (fixed by RGBA32 format).
+	TileWeightCount = 16
+
+	// PhaseResonanceExcite is the positive resonance threshold for excitatory firing.
+	PhaseResonanceExcite int8 = 16
+
+	// PhaseResonanceInhibit is the negative resonance threshold for inhibitory firing.
+	PhaseResonanceInhibit int8 = -16
+
+	// ConfidenceLowBitmask sets the lowest confidence bit for each 2-bit pair.
+	ConfidenceLowBitmask uint32 = 0x55555555
+
+	// AmplitudeShift is the right-shift used for amplitude scaling (divide by 128).
+	AmplitudeShift = 7
+)
 
 // NeuroRadioTile is the fundamental compute+routing unit.
 type NeuroRadioTile struct {
@@ -39,8 +59,8 @@ func NewNeuroRadioTile(weights, confidence uint32, listenFreq, phase, amplitude,
 
 // unpackTernary extracts 16 ternary weights from the sign/mask RGBA format.
 // Returns values in {-1, 0, +1}.
-func (t *NeuroRadioTile) unpackTernary() [16]int8 {
-	var out [16]int8
+func (t *NeuroRadioTile) unpackTernary() [TileWeightCount]int8 {
+	var out [TileWeightCount]int8
 	w := t.Weights
 	// R = sign bits 0-7, G = mask bits 0-7 (low 8 weights)
 	// B = sign bits 8-15, A = mask bits 8-15 (high 8 weights)
@@ -74,7 +94,7 @@ func (t *NeuroRadioTile) unpackTernary() [16]int8 {
 //
 // P0.3 FIX: uses sign/mask unpack compatible with TernaryTile format.
 // P0.4 FIX: phase logic uses signed resonance for proper anti-phase.
-func (t *NeuroRadioTile) Forward(input [16]int8, busSignal int32, busPhase uint8) int32 {
+func (t *NeuroRadioTile) Forward(input [TileWeightCount]int8, busSignal int32, busPhase uint8) int32 {
 	// Gate 1: Frequency match — was there a signal on our listen frequency?
 	if busSignal == 0 {
 		return 0 // No signal on our freq → dormant, zero cost
@@ -85,9 +105,9 @@ func (t *NeuroRadioTile) Forward(input [16]int8, busSignal int32, busPhase uint8
 
 	// P0.4 FIX: proper three-way phase logic
 	var phaseSign int32
-	if res > 16 {
+	if res > PhaseResonanceExcite {
 		phaseSign = +1 // In-phase: excitatory contribution
-	} else if res < -16 {
+	} else if res < PhaseResonanceInhibit {
 		phaseSign = -1 // Anti-phase: inhibitory contribution
 	} else {
 		return 0 // Near-zero resonance: skip (neutral zone)
@@ -99,7 +119,7 @@ func (t *NeuroRadioTile) Forward(input [16]int8, busSignal int32, busPhase uint8
 	c := t.Confidence
 
 	var sum int32
-	for i := 0; i < 16; i++ {
+	for i := 0; i < TileWeightCount; i++ {
 		tw := ternary[i]
 		if tw == 0 {
 			continue // Zero weight → skip
@@ -119,14 +139,14 @@ func (t *NeuroRadioTile) Forward(input [16]int8, busSignal int32, busPhase uint8
 
 	// Gate 5: Amplitude scaling
 	amp := int32(t.Radio.Amplitude())
-	sum = (sum * amp) >> 7 // Scale by amplitude/128
+	sum = (sum * amp) >> AmplitudeShift // Scale by amplitude/128
 
 	return sum
 }
 
 // ForwardSparse is the fast path: only processes if frequency matches.
 // Returns (output, didActivate).
-func (t *NeuroRadioTile) ForwardSparse(input [16]int8, bus *RadioBus) (int32, bool) {
+func (t *NeuroRadioTile) ForwardSparse(input [TileWeightCount]int8, bus *RadioBus) (int32, bool) {
 	freq := t.Radio.FreqListen()
 	signal, phase := bus.Read(freq)
 
@@ -145,7 +165,7 @@ func (t *NeuroRadioTile) Confirm() {
 		t.Radio.SetAmplitude(amp + 1)
 	}
 	// Also boost confidence of active weights
-	t.Confidence |= 0x55555555 // Set at least bit 0 of each 2-bit pair
+	t.Confidence |= ConfidenceLowBitmask // Set at least bit 0 of each 2-bit pair
 }
 
 // Contradict weakens this tile (Hebbian LTD).

@@ -74,12 +74,15 @@ type OutputNeuronDecoder struct {
 	Neurons []OutputNeuron
 	// Inverse index: freq → list of neuron indices
 	FreqIndex [256][]int
+	// Minimum signal threshold for ActiveChannels during decode (default 5)
+	threshold int
 }
 
 // NewOutputNeuronDecoder creates a decoder from the semantic codec.
 func NewOutputNeuronDecoder(codec *SemanticFreqCodec, vocabSize int) *OutputNeuronDecoder {
 	d := &OutputNeuronDecoder{
-		Neurons: make([]OutputNeuron, 0, vocabSize),
+		Neurons:   make([]OutputNeuron, 0, vocabSize),
+		threshold: 5,
 	}
 
 	for tokenID := 0; tokenID < vocabSize; tokenID++ {
@@ -103,7 +106,7 @@ func NewOutputNeuronDecoder(codec *SemanticFreqCodec, vocabSize int) *OutputNeur
 // Only checks tokens whose frequencies are active — no full vocab scan.
 func (d *OutputNeuronDecoder) Decode(bus *RadioBus) (tokenID int, score int64) {
 	// Find active frequencies
-	activeFreqs := bus.ActiveChannels(5)
+	activeFreqs := bus.ActiveChannels(int32(d.threshold))
 	if len(activeFreqs) == 0 {
 		return -1, 0
 	}
@@ -145,7 +148,7 @@ func (d *OutputNeuronDecoder) Decode(bus *RadioBus) (tokenID int, score int64) {
 
 // DecodeTopK returns top-K tokens and scores.
 func (d *OutputNeuronDecoder) DecodeTopK(bus *RadioBus, k int) []TokenScore {
-	activeFreqs := bus.ActiveChannels(5)
+	activeFreqs := bus.ActiveChannels(int32(d.threshold))
 	scores := make(map[int]int64)
 	for _, freq := range activeFreqs {
 		signal, _ := bus.Read(freq)
@@ -184,6 +187,13 @@ type NeuroRadioCortex struct {
 	TickCount uint64
 	rng       *rand.Rand
 
+	// Configurable parameters (set from central Config)
+	DecodeActiveThreshold int // ActiveChannels threshold in Decode (default 5)
+	InitAmpMin            int // Initial amplitude minimum (default 100)
+	InitAmpRange          int // Initial amplitude range (default 156)
+	InhibitoryRatioDiv    int // Inhibitory ratio divisor: 1/N (default 5)
+	InjectAmplitude       int // Inject amplitude for ProcessInput/TrainStep (default 200)
+
 	// Stats tracking
 	LastActiveTiles int // How many tiles activated last tick
 	LastTotalTiles  int // Total alive tiles
@@ -191,6 +201,11 @@ type NeuroRadioCortex struct {
 
 // NewNeuroRadioCortex creates a new cortex with the given number of tiles.
 func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
+	// Use default config values; callers should override these from Config.
+	initAmpMin := 100
+	initAmpRange := 156
+	inhibitoryDiv := 5
+
 	tiles := make([]NeuroRadioTile, size)
 
 	for i := range tiles {
@@ -201,9 +216,9 @@ func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 		// Random radio params
 		listenFreq := uint8(rng.Intn(256))
 		phase := uint8(rng.Intn(256))
-		amplitude := uint8(100 + rng.Intn(156)) // Start strong (100-255)
-		emitFreq := uint8(rng.Intn(256))          // full 0-255 emit freq
-		inhibitory := rng.Intn(5) == 0           // 20% inhibitory
+		amplitude := uint8(initAmpMin + rng.Intn(initAmpRange)) // Start strong
+		emitFreq := uint8(rng.Intn(256))                         // full 0-255 emit freq
+		inhibitory := rng.Intn(inhibitoryDiv) == 0               // configurable inhibitory ratio
 
 		tiles[i] = NewNeuroRadioTile(weights, confidence, listenFreq, phase, amplitude, emitFreq, inhibitory)
 	}
@@ -212,11 +227,16 @@ func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 	index := NewRadioBucketIndex(tiles)
 
 	nrc := &NeuroRadioCortex{
-		Tiles: tiles,
-		Index: index,
-		Codec: codec,
-		Size:  size,
-		rng:   rng,
+		Tiles:                 tiles,
+		Index:                 index,
+		Codec:                 codec,
+		Size:                  size,
+		rng:                   rng,
+		DecodeActiveThreshold: 5,
+		InitAmpMin:            initAmpMin,
+		InitAmpRange:          initAmpRange,
+		InhibitoryRatioDiv:    inhibitoryDiv,
+		InjectAmplitude:       200,
 	}
 	return nrc
 }
@@ -293,7 +313,7 @@ func (nrc *NeuroRadioCortex) InjectTokens(tokenIDs []int, amplitude int16) {
 // ProcessInput does a full input→output cycle.
 func (nrc *NeuroRadioCortex) ProcessInput(tokenIDs []int, ticks int) (int, int64) {
 	nrc.Bus.Clear()
-	nrc.InjectTokens(tokenIDs, 200)
+	nrc.InjectTokens(tokenIDs, int16(nrc.InjectAmplitude))
 
 	for t := 0; t < ticks; t++ {
 		nrc.Step()
@@ -308,7 +328,7 @@ func (nrc *NeuroRadioCortex) ProcessInput(tokenIDs []int, ticks int) (int, int64
 // TrainStep does one train iteration: input→forward→compare→Hebbian.
 func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, ticks int) int {
 	nrc.Bus.Clear()
-	nrc.InjectTokens(inputTokenIDs, 200)
+	nrc.InjectTokens(inputTokenIDs, int16(nrc.InjectAmplitude))
 
 	for t := 0; t < ticks; t++ {
 		nrc.Step()
@@ -366,9 +386,9 @@ func (nrc *NeuroRadioCortex) Neurogenesis() int {
 				0x55555555,
 				uint8(nrc.rng.Intn(256)),
 				uint8(nrc.rng.Intn(256)),
-				uint8(100+nrc.rng.Intn(156)),
+				uint8(nrc.InitAmpMin+nrc.rng.Intn(nrc.InitAmpRange)),
 				uint8(nrc.rng.Intn(256)),
-				nrc.rng.Intn(5) == 0,
+				nrc.rng.Intn(nrc.InhibitoryRatioDiv) == 0,
 			)
 			replaced++
 		}

@@ -183,12 +183,23 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 	// Only create RadioCortex if enabled
 	if cfg.RadioCortexEnabled {
 		org.RadioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
-		org.SignalCodec = NewSignalCodec(1000) // initial vocab, grows dynamically
+		org.RadioCortex.TrainAmplitude = cfg.RadioTrainAmplitude
+		org.RadioCortex.ResonanceThreshold = cfg.RadioResonanceThreshold
+		org.RadioCortex.WeakNeuronThreshold = cfg.RadioWeakNeuronThreshold
+		org.RadioCortex.GenerateWindowSize = cfg.RadioGenerateWindowSize
+		org.RadioCortex.AntiLoopMaxRepeat = cfg.RadioAntiLoopMaxRepeat
+		org.RadioCortex.DecodeTopK = cfg.RadioDecodeTopK
+		org.SignalCodec = NewSignalCodec(cfg.SignalCodecInitVocab) // initial vocab, grows dynamically
 	}
 
 	// Initialize NeuroRadioCortex if enabled
 	if cfg.NeuroRadioEnabled {
 		org.NeuroRadio = NewNeuroRadioCortex(cfg.RadioNeuronCount, rng)
+		org.NeuroRadio.DecodeActiveThreshold = cfg.NRCDecodeActiveThreshold
+		org.NeuroRadio.InitAmpMin = cfg.NRCInitAmpMin
+		org.NeuroRadio.InitAmpRange = cfg.NRCInitAmpRange
+		org.NeuroRadio.InhibitoryRatioDiv = cfg.NRCInhibitoryRatioDiv
+		org.NeuroRadio.InjectAmplitude = cfg.NRCInjectAmplitude
 		fmt.Printf("[NeuroRadio] Initialized: %d tiles (%.1f MB)\n",
 			cfg.RadioNeuronCount, float64(cfg.RadioNeuronCount*12)/(1024*1024))
 	}
@@ -1360,19 +1371,19 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 			if loadErr != nil {
 				fmt.Printf("[RadioCortex] Load failed (%v), starting fresh.\n", loadErr)
 				radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
-				signalCodec = NewSignalCodec(1000)
+				signalCodec = NewSignalCodec(cfg.SignalCodecInitVocab)
 			} else {
 				radioCortex = rc
 				if sc != nil {
 					signalCodec = sc
 				} else {
-					signalCodec = NewSignalCodec(1000)
+					signalCodec = NewSignalCodec(cfg.SignalCodecInitVocab)
 				}
 				fmt.Printf("[RadioCortex] Restored %d neurons (tick %d) from disk.\n", rc.Size, rc.TickCount)
 			}
 		} else {
 			radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
-			signalCodec = NewSignalCodec(1000)
+			signalCodec = NewSignalCodec(cfg.SignalCodecInitVocab)
 		}
 	}
 
@@ -1405,7 +1416,7 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 			loadedTok.ActualVocabSize(), len(loadedTok.Merges))
 
 		// Create transformer matching tokenizer vocab
-		tfCfg := DefaultTransformerConfig(loadedTok.ActualVocabSize())
+		tfCfg := TransformerConfigFromConfig(loadedTok.ActualVocabSize(), cfg)
 		miniTransformer = NewMiniTransformer(tfCfg, rng)
 		fmt.Printf("[Broca 2.0] MiniTransformer initialized (%d params)\n",
 			miniTransformer.ParamCount())

@@ -29,7 +29,7 @@ func (rc *RadioCortex) RadioTrainStep(codec *SignalCodec, inputTokenIDs []int, t
 	}
 
 	// Inject input tokens onto bus
-	codec.EncodeTokens(&rc.Bus, inputTokenIDs, 200)
+	codec.EncodeTokens(&rc.Bus, inputTokenIDs, uint8(rc.TrainAmplitude))
 
 	// Activate input neurons that match
 	for i := rc.InputStart; i < rc.InputEnd; i++ {
@@ -37,7 +37,7 @@ func (rc *RadioCortex) RadioTrainStep(codec *SignalCodec, inputTokenIDs []int, t
 		signal, busPhase := rc.Bus.Read(n.FreqListen())
 		if signal > 0 {
 			resonance := Resonance(n.Phase(), busPhase)
-			if resonance > 20 {
+			if resonance > int8(rc.ResonanceThreshold) {
 				rc.Fired[i] = true
 			}
 		}
@@ -125,7 +125,7 @@ func (rc *RadioCortex) RadioTrainStep(codec *SignalCodec, inputTokenIDs []int, t
 					n.SetAmplitude(amp - 1)
 				}
 				// Weak neurons drift toward target frequencies
-				if amp < 32 && len(targetFreqs) > 0 {
+				if amp < uint8(rc.WeakNeuronThreshold) && len(targetFreqs) > 0 {
 					// Re-tune to a random target frequency
 					newFreq := targetFreqs[rc.rng.Intn(len(targetFreqs))]
 					n.SetFreqListen(newFreq)
@@ -173,12 +173,12 @@ func (rc *RadioCortex) RadioGenerate(codec *SignalCodec, vocab *Vocab, contextTo
 		}
 
 		// Encode current context (use last N tokens as window)
-		windowSize := 8
+		windowSize := rc.GenerateWindowSize
 		window := context
 		if len(window) > windowSize {
 			window = window[len(window)-windowSize:]
 		}
-		codec.EncodeTokens(&rc.Bus, window, 200)
+		codec.EncodeTokens(&rc.Bus, window, uint8(rc.TrainAmplitude))
 
 		// Activate matching input neurons
 		for i := rc.InputStart; i < rc.InputEnd; i++ {
@@ -186,7 +186,7 @@ func (rc *RadioCortex) RadioGenerate(codec *SignalCodec, vocab *Vocab, contextTo
 			signal, busPhase := rc.Bus.Read(n.FreqListen())
 			if signal > 0 {
 				resonance := Resonance(n.Phase(), busPhase)
-				if resonance > 20 {
+				if resonance > int8(rc.ResonanceThreshold) {
 					rc.Fired[i] = true
 				}
 			}
@@ -220,12 +220,12 @@ func (rc *RadioCortex) RadioGenerate(codec *SignalCodec, vocab *Vocab, contextTo
 		}
 
 		// Anti-loop: skip tokens that appear too often
-		if lastTokens[tokenID] >= 2 {
+		if lastTokens[tokenID] >= rc.AntiLoopMaxRepeat {
 			// Try second-best token
-			topK := codec.DecodeTopK(&rc.Bus, 5)
+			topK := codec.DecodeTopK(&rc.Bus, rc.DecodeTopK)
 			found := false
 			for _, ts := range topK {
-				if lastTokens[ts.TokenID] < 2 {
+				if lastTokens[ts.TokenID] < rc.AntiLoopMaxRepeat {
 					tokenID = ts.TokenID
 					found = true
 					break
