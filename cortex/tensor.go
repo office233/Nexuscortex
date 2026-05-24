@@ -130,6 +130,17 @@ func (t *Tensor) offset(indices ...int) int {
 
 // MatMul performs matrix multiplication: C = A × B.
 // A is [M, K], B is [K, N], result is [M, N].
+//
+// Two optimisations vs. the naive triple loop:
+//  1. i-k-j loop order. The innermost loop streams contiguous bytes of
+//     B (b.Data[bOff+j]) instead of jumping by N (b.Data[k*N+j]); this
+//     keeps the L1 cache hot and is ~3–4× faster on modern x86 for the
+//     transformer's matmul shapes.
+//  2. Per-row goroutines when M is big enough. The output rows are
+//     independent (different i) so we can split the M range across all
+//     CPU cores with no synchronisation. The threshold avoids spawning
+//     work for tiny matmuls (single-token attention queries) where
+//     goroutine overhead would dominate.
 func (a *Tensor) MatMul(b *Tensor) *Tensor {
 	if len(a.Shape) != 2 || len(b.Shape) != 2 {
 		panic(fmt.Sprintf("MatMul requires 2D tensors, got %v × %v", a.Shape, b.Shape))
@@ -141,22 +152,53 @@ func (a *Tensor) MatMul(b *Tensor) *Tensor {
 	}
 
 	c := NewTensor(M, N)
-	for i := 0; i < M; i++ {
+	matmulRows(a.Data, b.Data, c.Data, 0, M, K, N)
+	return c
+}
+
+// matmulRowsSequential computes C[rowStart:rowEnd, :] = A × B with the
+// cache-friendly i-k-j loop order. Pulled out so the parallel dispatcher
+// can call it per worker on a row slab.
+func matmulRowsSequential(a, b, c []float32, rowStart, rowEnd, K, N int) {
+	for i := rowStart; i < rowEnd; i++ {
+		aOff := i * K
+		cOff := i * N
+		// Zero the row first so we can accumulate with +=.
 		for j := 0; j < N; j++ {
-			sum := float32(0)
-			aOff := i * K
-			for k := 0; k < K; k++ {
-				sum += a.Data[aOff+k] * b.Data[k*N+j]
+			c[cOff+j] = 0
+		}
+		for k := 0; k < K; k++ {
+			aik := a[aOff+k]
+			bOff := k * N
+			for j := 0; j < N; j++ {
+				c[cOff+j] += aik * b[bOff+j]
 			}
-			c.Data[i*N+j] = sum
 		}
 	}
-	return c
+}
+
+// matmulRows dispatches the row range to a worker pool when worthwhile.
+// Threshold tuned empirically: below ~4 rows the goroutine spin-up cost
+// outweighs the gain (Generate's per-token single-row matmuls).
+func matmulRows(a, b, c []float32, rowStart, rowEnd, K, N int) {
+	rows := rowEnd - rowStart
+	workers := tensorParallelism()
+	if workers <= 1 || rows < tensorParallelMinRows {
+		matmulRowsSequential(a, b, c, rowStart, rowEnd, K, N)
+		return
+	}
+	runRowParallel(rows, workers, func(lo, hi int) {
+		matmulRowsSequential(a, b, c, rowStart+lo, rowStart+hi, K, N)
+	})
 }
 
 // MatMulTransposed performs A × B^T.
 // A is [M, K], B is [N, K], result is [M, N].
 // Avoids explicitly transposing B (cache-friendlier).
+//
+// The original i-j-k order is already cache-friendly here (both a and b
+// rows are streamed contiguously inside the innermost loop), so we keep
+// it and only add per-row goroutine parallelism.
 func (a *Tensor) MatMulTransposed(b *Tensor) *Tensor {
 	M, K := a.Shape[0], a.Shape[1]
 	N := b.Shape[0]
@@ -165,18 +207,34 @@ func (a *Tensor) MatMulTransposed(b *Tensor) *Tensor {
 	}
 
 	c := NewTensor(M, N)
-	for i := 0; i < M; i++ {
+	matmulTRows(a.Data, b.Data, c.Data, 0, M, K, N)
+	return c
+}
+
+func matmulTRowsSequential(a, b, c []float32, rowStart, rowEnd, K, N int) {
+	for i := rowStart; i < rowEnd; i++ {
 		aOff := i * K
 		for j := 0; j < N; j++ {
 			sum := float32(0)
 			bOff := j * K
 			for k := 0; k < K; k++ {
-				sum += a.Data[aOff+k] * b.Data[bOff+k]
+				sum += a[aOff+k] * b[bOff+k]
 			}
-			c.Data[i*N+j] = sum
+			c[i*N+j] = sum
 		}
 	}
-	return c
+}
+
+func matmulTRows(a, b, c []float32, rowStart, rowEnd, K, N int) {
+	rows := rowEnd - rowStart
+	workers := tensorParallelism()
+	if workers <= 1 || rows < tensorParallelMinRows {
+		matmulTRowsSequential(a, b, c, rowStart, rowEnd, K, N)
+		return
+	}
+	runRowParallel(rows, workers, func(lo, hi int) {
+		matmulTRowsSequential(a, b, c, rowStart+lo, rowStart+hi, K, N)
+	})
 }
 
 // Add performs element-wise addition. Supports broadcasting: if b has
