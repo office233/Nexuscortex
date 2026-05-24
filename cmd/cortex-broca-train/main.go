@@ -53,8 +53,20 @@ func main() {
 		log.Fatalf("LoadOrganism failed: %v", err)
 	}
 
-	if org.Transformer == nil || org.Tokenizer == nil {
-		log.Fatal("organism has no Broca 2.0 (transformer or tokenizer is nil)")
+	if org.Tokenizer == nil {
+		log.Fatal("organism has no BPE tokenizer — train one first via cortex-tokenizer")
+	}
+
+	// LoadOrganism intentionally leaves Transformer nil when no
+	// transformer.nxtf exists on disk, so production loads do not
+	// activate an untrained Broca 2.0. This CLI is the one place where
+	// bootstrapping a fresh transformer IS the intent: create it here
+	// so the first training run on a clean data dir works.
+	if org.Transformer == nil {
+		tfCfg := cortex.TransformerConfigFromConfig(org.Tokenizer.ActualVocabSize(), cfg)
+		org.Transformer = cortex.NewMiniTransformer(tfCfg, rng)
+		fmt.Printf("[Broca 2.0] Bootstrapped fresh transformer (%d params)\n",
+			org.Transformer.ParamCount())
 	}
 
 	fmt.Printf("Transformer params: %d (~%.2fM)\n",

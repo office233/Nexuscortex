@@ -1469,7 +1469,16 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		neuroRadio.InjectAmplitude = cfg.NRCInjectAmplitude
 	}
 
-	// 8. Broca 2.0 — Load BPE tokenizer and MiniTransformer (optional)
+	// 8. Broca 2.0 — load BPE tokenizer + trained MiniTransformer.
+	// Activation policy: the transformer is enabled ONLY when a real
+	// trained weight file exists on disk. A fresh, random transformer
+	// produces incoherent text and would beat Broca 1.0 (which can at
+	// least regurgitate plausible memories) only on very long training
+	// runs. Until a meaningful corpus has been processed by
+	// cortex-broca-train, fall through to the associative path.
+	// The cortex-broca-train CLI bootstraps a fresh transformer on
+	// demand, trains it, and writes transformer.nxtf — after which
+	// regular organism loads pick up the trained weights here.
 	var bpeTokenizer *BPETokenizer
 	var miniTransformer *MiniTransformer
 
@@ -1479,21 +1488,17 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		fmt.Printf("[Broca 2.0] BPE tokenizer loaded (vocab: %d, merges: %d)\n",
 			loadedTok.ActualVocabSize(), len(loadedTok.Merges))
 
-		// Try to restore previously trained weights. If missing or incompatible,
-		// fall back to fresh init so the system stays usable.
 		transformerPath := filepath.Join(cfg.DataDir, "transformer.nxtf")
 		if loadedTF, lerr := LoadMiniTransformer(transformerPath, rng); lerr == nil && loadedTF != nil {
 			miniTransformer = loadedTF
-			fmt.Printf("[Broca 2.0] MiniTransformer restored from disk (%d params)\n",
+			fmt.Printf("[Broca 2.0] MiniTransformer restored from disk (%d params, active)\n",
 				miniTransformer.ParamCount())
 		} else {
 			if lerr != nil {
-				fmt.Printf("[Broca 2.0] Transformer load failed (%v), starting fresh.\n", lerr)
+				fmt.Printf("[Broca 2.0] Transformer load failed (%v); Broca 2.0 disabled, using Broca 1.0.\n", lerr)
+			} else {
+				fmt.Println("[Broca 2.0] No trained transformer found; Broca 2.0 disabled, using Broca 1.0.")
 			}
-			tfCfg := TransformerConfigFromConfig(loadedTok.ActualVocabSize(), cfg)
-			miniTransformer = NewMiniTransformer(tfCfg, rng)
-			fmt.Printf("[Broca 2.0] MiniTransformer initialized fresh (%d params)\n",
-				miniTransformer.ParamCount())
 		}
 	} else {
 		fmt.Println("[Broca 2.0] No tokenizer found, using Broca 1.0 fallback.")
