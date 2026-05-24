@@ -1,0 +1,6 @@
+LIBRARY cuda_nexus
+EXPORTS
+    nexus_cuda_init
+    nexus_cuda_close
+    nexus_cuda_forward_sparse
+    nexus_cuda_batch_sdr_similarity

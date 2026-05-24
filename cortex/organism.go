@@ -137,16 +137,23 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 
 	prefrontal := NewPrefrontal(cfg, rng)
 
-	// Try hardware acceleration
+	// Try hardware acceleration: CUDA → WebGPU → CPU
 	var engine interface{}
-	gpu := compute.NewWebGPUEngine()
-	gpu.Timeout = time.Duration(cfg.WebGPUTimeoutSecs) * time.Second
-	if err := gpu.Init(); err == nil {
-		fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
-		engine = gpu
+	cuda := compute.NewCUDAEngine()
+	if err := cuda.Init(); err == nil {
+		fmt.Println("[GPU Compute] CUDA Engine initialized successfully.")
+		engine = cuda
 	} else {
-		fmt.Printf("[GPU Compute] Fallback to CPU Engine (WebGPU failed: %v)\n", err)
-		engine = compute.NewCPUEngine()
+		fmt.Printf("[GPU Compute] CUDA not available: %v\n", err)
+		gpu := compute.NewWebGPUEngine()
+		gpu.Timeout = time.Duration(cfg.WebGPUTimeoutSecs) * time.Second
+		if err := gpu.Init(); err == nil {
+			fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
+			engine = gpu
+		} else {
+			fmt.Printf("[GPU Compute] Fallback to CPU Engine (WebGPU failed: %v)\n", err)
+			engine = compute.NewCPUEngine()
+		}
 	}
 
 	org := &Organism{
@@ -1345,16 +1352,23 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		reward = NewRewardSystem(cfg)
 	}
 
-	// Try hardware acceleration
+	// Try hardware acceleration: CUDA → WebGPU → CPU
 	var engine interface{}
-	gpu := compute.NewWebGPUEngine()
-	gpu.Timeout = time.Duration(cfg.WebGPUTimeoutSecs) * time.Second
-	if err := gpu.Init(); err == nil {
-		fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
-		engine = gpu
+	cuda := compute.NewCUDAEngine()
+	if err := cuda.Init(); err == nil {
+		fmt.Println("[GPU Compute] CUDA Engine initialized successfully.")
+		engine = cuda
 	} else {
-		fmt.Printf("[GPU Compute] Fallback to CPU Engine (WebGPU failed: %v)\n", err)
-		engine = compute.NewCPUEngine()
+		fmt.Printf("[GPU Compute] CUDA not available: %v\n", err)
+		gpu := compute.NewWebGPUEngine()
+		gpu.Timeout = time.Duration(cfg.WebGPUTimeoutSecs) * time.Second
+		if err := gpu.Init(); err == nil {
+			fmt.Println("[GPU Compute] WebGPU Engine initialized successfully.")
+			engine = gpu
+		} else {
+			fmt.Printf("[GPU Compute] Fallback to CPU Engine (WebGPU failed: %v)\n", err)
+			engine = compute.NewCPUEngine()
+		}
 	}
 
 	fractalCortex := NewFractalCortex(cfg, engine)
