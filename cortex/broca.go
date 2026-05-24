@@ -446,8 +446,11 @@ func (b *Broca) GenerateWithTransformer(
 		temperature = 1.3
 	}
 
-	// Generate
-	outputIDs := transformer.Generate(input, maxTokens, temperature, 40)
+	// Generate. Use the KV-cached fast path which is numerically
+	// equivalent to Generate() but O(N) per emitted token instead of
+	// O(N^2). On CPU the speedup is the difference between a usable
+	// dashboard and an unusable one.
+	outputIDs := transformer.GenerateFast(input, maxTokens, temperature, 40)
 
 	// Extract only the generated part (remove prompt)
 	if len(outputIDs) <= len(input) {
