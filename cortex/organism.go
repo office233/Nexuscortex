@@ -96,7 +96,7 @@ type Organism struct {
 	// When both are non-nil, Broca uses the transformer for generation.
 	// When nil, falls back to Broca 1.0 (associative chain walker).
 	Transformer *MiniTransformer // Autoregressive language model
-	Tokenizer   *BPETokenizer   // BPE subword tokenizer
+	Tokenizer   *BPETokenizer    // BPE subword tokenizer
 
 	// Body systems — sensory input, motor output, biological timing.
 	Sensory *SensorySystem // Multi-channel sensory processing
@@ -535,7 +535,7 @@ func (o *Organism) Process(input string) string {
 			contextWords = append(contextWords, "|")
 		}
 		contextWords = append(contextWords, understanding.Words...)
-		
+
 		responseText = o.Broca.GenerateAutoregressive(o.FractalCortex, contextWords, o.Config.MaxGenWords)
 	}
 
@@ -751,12 +751,12 @@ func (o *Organism) LearnQA(question, answer string) {
 		// We add "|" as a separator token so the cortex learns to transition from Q to A
 		seqTokens := append(Tokenize(question), "|")
 		seqTokens = append(seqTokens, Tokenize(answer)...)
-		
+
 		seqSDRs := make([]SDR, 0, len(seqTokens))
 		for _, tok := range seqTokens {
 			seqSDRs = append(seqSDRs, o.Encoder.EncodeWord(tok))
 		}
-		
+
 		// Train the cortex using Probabilistic STDP with a moderate learning rate (e.g., 20/255 = ~8% probability)
 		o.FractalCortex.TrainSequence(seqSDRs, 20)
 	}
@@ -1089,10 +1089,30 @@ func (o *Organism) Stats() OrganismStats {
 		MotorOutputs:  o.Motor.Stats().TotalOutputs,
 		RhythmTick:    o.Rhythm.Stats().GlobalTick,
 
-		RadioNeurons:   func() int { if o.RadioCortex != nil { return o.RadioCortex.Stats().TotalNeurons }; return 0 }(),
-		RadioAlive:     func() int { if o.RadioCortex != nil { return o.RadioCortex.Stats().AliveNeurons }; return 0 }(),
-		RadioAvgAmp:    func() int { if o.RadioCortex != nil { return o.RadioCortex.Stats().AvgAmplitude }; return 0 }(),
-		RadioTickCount: func() uint64 { if o.RadioCortex != nil { return o.RadioCortex.Stats().TickCount }; return 0 }(),
+		RadioNeurons: func() int {
+			if o.RadioCortex != nil {
+				return o.RadioCortex.Stats().TotalNeurons
+			}
+			return 0
+		}(),
+		RadioAlive: func() int {
+			if o.RadioCortex != nil {
+				return o.RadioCortex.Stats().AliveNeurons
+			}
+			return 0
+		}(),
+		RadioAvgAmp: func() int {
+			if o.RadioCortex != nil {
+				return o.RadioCortex.Stats().AvgAmplitude
+			}
+			return 0
+		}(),
+		RadioTickCount: func() uint64 {
+			if o.RadioCortex != nil {
+				return o.RadioCortex.Stats().TickCount
+			}
+			return 0
+		}(),
 
 		TotalSynapticWeight: int64(brainStats.AvgWeight) * int64(brainStats.ActiveSynapses) / 256,
 	}
@@ -1226,6 +1246,14 @@ func (o *Organism) Save(dataDir string) error {
 	if o.NeuroRadio != nil {
 		if err := SaveNeuroRadioCortex(o.NeuroRadio, filepath.Join(dataDir, "neuro_radio.nxnr")); err != nil {
 			return fmt.Errorf("organism save neuro-radio cortex: %w", err)
+		}
+	}
+
+	// 15. Broca 2.0 — MiniTransformer weights. Without this every training
+	// session is thrown away on restart, which silently negates SelfEvolve.
+	if o.Transformer != nil {
+		if err := o.Transformer.Save(filepath.Join(dataDir, "transformer.nxtf")); err != nil {
+			return fmt.Errorf("organism save transformer: %w", err)
 		}
 	}
 
@@ -1451,11 +1479,22 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		fmt.Printf("[Broca 2.0] BPE tokenizer loaded (vocab: %d, merges: %d)\n",
 			loadedTok.ActualVocabSize(), len(loadedTok.Merges))
 
-		// Create transformer matching tokenizer vocab
-		tfCfg := TransformerConfigFromConfig(loadedTok.ActualVocabSize(), cfg)
-		miniTransformer = NewMiniTransformer(tfCfg, rng)
-		fmt.Printf("[Broca 2.0] MiniTransformer initialized (%d params)\n",
-			miniTransformer.ParamCount())
+		// Try to restore previously trained weights. If missing or incompatible,
+		// fall back to fresh init so the system stays usable.
+		transformerPath := filepath.Join(cfg.DataDir, "transformer.nxtf")
+		if loadedTF, lerr := LoadMiniTransformer(transformerPath, rng); lerr == nil && loadedTF != nil {
+			miniTransformer = loadedTF
+			fmt.Printf("[Broca 2.0] MiniTransformer restored from disk (%d params)\n",
+				miniTransformer.ParamCount())
+		} else {
+			if lerr != nil {
+				fmt.Printf("[Broca 2.0] Transformer load failed (%v), starting fresh.\n", lerr)
+			}
+			tfCfg := TransformerConfigFromConfig(loadedTok.ActualVocabSize(), cfg)
+			miniTransformer = NewMiniTransformer(tfCfg, rng)
+			fmt.Printf("[Broca 2.0] MiniTransformer initialized fresh (%d params)\n",
+				miniTransformer.ParamCount())
+		}
 	} else {
 		fmt.Println("[Broca 2.0] No tokenizer found, using Broca 1.0 fallback.")
 	}

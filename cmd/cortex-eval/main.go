@@ -50,6 +50,7 @@ func main() {
 	legacy := flag.Bool("legacy", false, "Run legacy 3-suite eval (basic_recall, no_echo, generalization)")
 	fullThresh := flag.Float64("full-threshold", 0.80, "Word overlap threshold for a FULL match (0.0 to 1.0)")
 	partialThresh := flag.Float64("partial-threshold", 0.50, "Word overlap threshold for a PARTIAL match (0.0 to 1.0)")
+	maxGen := flag.Int("max-gen", 0, "Override Config.MaxGenWords (0 = use config default). Useful with Broca 2.0 to bound runtime.")
 	flag.Parse()
 
 	cfg := cortex.DefaultConfig()
@@ -58,6 +59,9 @@ func main() {
 	cfg.Seed = *seed
 	cfg.Demo = false
 	cfg.NoSave = true
+	if *maxGen > 0 {
+		cfg.MaxGenWords = *maxGen
+	}
 
 	// Pre-warm: load organism once to verify state is valid.
 	loadOrganism(cfg, rand.New(rand.NewSource(cfg.Seed)), true)
@@ -285,7 +289,7 @@ func printComprehensiveReport(results []CaseResult) {
 	// ── Confidence calibration ───────────────────────────────────────────
 	fmt.Println("\nCONFIDENCE CALIBRATION")
 	type confBucket struct {
-		cat                            string
+		cat                      string
 		avgAll, avgFull, avgFail float64
 	}
 	var buckets []confBucket
@@ -498,6 +502,6 @@ func legacyCapabilityScore(suites []cortex.SuiteResult) float64 {
 		return 0
 	}
 	passRate := float64(passed) / float64(total) * 100.0
-	antiEchoRate := 100.0 - (float64(echoed)/float64(total)*100.0)
+	antiEchoRate := 100.0 - (float64(echoed) / float64(total) * 100.0)
 	return (passRate * 0.8) + (antiEchoRate * 0.2)
 }
