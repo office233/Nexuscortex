@@ -86,7 +86,6 @@ func (c *ExpertCache) Get(expertID int) (*ExpertShard, bool, error) {
 	// Mark this expert as in-flight so concurrent callers wait
 	done := make(chan struct{})
 	c.inflight[expertID] = done
-	c.misses++
 	c.mu.Unlock()
 
 	// Slow path: disk I/O happens WITHOUT holding the lock
@@ -111,6 +110,7 @@ func (c *ExpertCache) Get(expertID int) (*ExpertShard, bool, error) {
 	entry := &cacheEntry{expertID: expertID, shard: shard}
 	elem := c.order.PushFront(entry)
 	c.items[expertID] = elem
+	c.misses++
 	c.mu.Unlock()
 
 	return shard, false, nil

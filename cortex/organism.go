@@ -159,7 +159,7 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		Wernicke:       NewWernicke(vocab, encoder, cfg),
 		Broca:          NewBroca(vocab, encoder, decoder, brain, cfg),
 		Hippocampus:    NewHippocampus(cfg),
-		SemanticMemory: NewSemanticMemory(cfg.SDRSize),
+		SemanticMemory: NewSemanticMemory(cfg.SDRSize, cfg),
 		Cerebellum:     NewCerebellum(cfg),
 		Prefrontal:     prefrontal,
 
@@ -441,14 +441,15 @@ func (o *Organism) Process(input string) string {
 					signal, busPhase := o.RadioCortex.Bus.Read(n.FreqListen())
 					if signal > 0 {
 						resonance := Resonance(n.Phase(), busPhase)
-						if resonance > 20 {
+						if resonance > int8(o.Config.RadioResonanceThreshold) {
 							o.RadioCortex.Fired[i] = true
 						}
 					}
 				}
 
-				// 20 ticks — enough for input → hidden → hidden → output
-				for tick := 0; tick < 20; tick++ {
+				// radioProcessTicks ticks — enough for input → hidden → hidden → output
+				const radioProcessTicks = 20 // propagation ticks per radio cycle
+				for tick := 0; tick < radioProcessTicks; tick++ {
 					o.RadioCortex.Step()
 				}
 
@@ -586,7 +587,7 @@ func (o *Organism) Process(input string) string {
 	// ── 6. LEARN ─────────────────────────────────────────────────
 	// Store the Prefrontal-refined SDR in Hippocampus (not re-encoded) if we have a valid response.
 	// This preserves the neural computation's output.
-	if responseText != "" && responseText != "(no confident response)" && combinedSDR.ActiveCount > 0 && responseSDR.ActiveCount > 0 {
+	if responseText != "" && responseText != NoConfidentResponse && combinedSDR.ActiveCount > 0 && responseSDR.ActiveCount > 0 {
 		o.Hippocampus.Store(combinedSDR, responseSDR, input)
 	}
 
@@ -609,7 +610,7 @@ func (o *Organism) Process(input string) string {
 
 	// ── RADIO HEBBIAN: Reinforce/weaken neurons based on response quality. ──
 	if o.RadioCortex != nil {
-		if responseText != "" && responseText != "(no confident response)" && confidence >= o.Config.PrefrontalConfThreshold {
+		if responseText != "" && responseText != NoConfidentResponse && confidence >= o.Config.PrefrontalConfThreshold {
 			o.RadioCortex.Confirm() // Good response → strengthen fired neurons
 		} else {
 			o.RadioCortex.Contradict() // Bad/no response → weaken and re-tune
@@ -621,7 +622,7 @@ func (o *Organism) Process(input string) string {
 	if len(understanding.KeyWords) > 0 {
 		topic = understanding.KeyWords[0]
 	}
-	if responseText != "" && responseText != "(no confident response)" && confidence >= o.Config.PrefrontalConfThreshold {
+	if responseText != "" && responseText != NoConfidentResponse && confidence >= o.Config.PrefrontalConfThreshold {
 		o.Self.RecordSuccess(topic, confidence)
 	} else {
 		o.Self.RecordFailure(topic)
@@ -645,14 +646,14 @@ func (o *Organism) Process(input string) string {
 	}
 
 	if responseText == "" {
-		responseText = "(no confident response)"
+		responseText = NoConfidentResponse
 	}
 
 	// ── WORKING MEMORY: Store this interaction for next-turn context. ──
 	// Store the input SDR with moderate relevance.
 	o.WorkingMem.Store(combinedSDR, input, 150+confidence/4)
 	// Store the response SDR with confidence-proportional relevance.
-	if responseText != "(no confident response)" && responseSDR.ActiveCount > 0 {
+	if responseText != NoConfidentResponse && responseSDR.ActiveCount > 0 {
 		o.WorkingMem.Store(responseSDR, responseText, confidence)
 	}
 	// Age all WM slots — irrelevant items will fade automatically.
@@ -948,7 +949,7 @@ func (o *Organism) AutoLearn() []string {
 		}
 		// Boost interest in this weak topic by injecting a high prediction
 		// error signal (200), pushing it into the "learnable zone" of curiosity.
-		o.Curiosity.ObserveError(200, topic)
+		o.Curiosity.ObserveError(o.Config.AutoLearnErrorBoost, topic)
 		queued = append(queued, topic)
 	}
 	return queued
@@ -1369,7 +1370,7 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 	if cfg.RadioCortexEnabled {
 		radioPath := filepath.Join(cfg.DataDir, "radio_cortex.nxrc")
 		if _, err := os.Stat(radioPath); err == nil {
-			rc, sc, loadErr := LoadRadioCortex(radioPath)
+			rc, sc, loadErr := LoadRadioCortex(radioPath, cfg)
 			if loadErr != nil {
 				fmt.Printf("[RadioCortex] Load failed (%v), starting fresh.\n", loadErr)
 				radioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
@@ -1504,7 +1505,7 @@ func (o *Organism) HandleFeedback(topic string, responseText string, positive bo
 		o.Self.RecordSuccess(topic, 255)
 
 		// Modulate Emotion: boost valence and arousal (rewarding)
-		o.Emotion.Update(100, 0, atomic.LoadUint64(&o.InteractionCount))
+		o.Emotion.Update(o.Config.FeedbackPositiveReward, 0, atomic.LoadUint64(&o.InteractionCount))
 
 		// Reinforce the response sequence in Brain and SequenceMemory
 		if responseText != "" {
@@ -1514,7 +1515,7 @@ func (o *Organism) HandleFeedback(topic string, responseText string, positive bo
 		o.Self.RecordFailure(topic)
 
 		// Modulate Emotion: drop valence, raise arousal (frustrated/alert)
-		o.Emotion.Update(-100, 100, atomic.LoadUint64(&o.InteractionCount))
+		o.Emotion.Update(o.Config.FeedbackNegativeReward, o.Config.FeedbackNegativeArousal, atomic.LoadUint64(&o.InteractionCount))
 
 		// Weaken the incorrect sequence in Brain and SequenceMemory
 		if responseText != "" {
@@ -1588,7 +1589,7 @@ func (o *Organism) SelfTrain() (consolidated int, pruned int, logMsgs []string) 
 
 		// Let Broca generate a phrasing representing this concept
 		phrase := o.Broca.Generate(mem.Output, o.Config.MaxGenWords)
-		if phrase == "" || phrase == "(no confident response)" {
+		if phrase == "" || phrase == NoConfidentResponse {
 			continue
 		}
 

@@ -70,6 +70,12 @@ const (
 	StdpMaxWeight  uint8 = 250 // Maximum weight cap
 )
 
+// columnarTraceIncrement is the trace value added per spike to the
+// columnar dominance tracker. Combined with the 7/8 decay factor,
+// this determines the time constant and sensitivity of columnar
+// Winner-Take-All competition.
+const columnarTraceIncrement uint32 = 256
+
 // PackResSynapseRGBA32 encodes this synapse as two uint32 pixels.
 func (s *ResSynapse) PackResSynapseRGBA32() (uint32, uint32) {
 	p1 := uint32(s.Source>>8)<<24 | uint32(s.Source&0xFF)<<16 |
@@ -330,7 +336,7 @@ func (n *Network) Tick(externalInputs []uint8) []bool {
 			if spiked && i < size {
 				col := i / colSize
 				if col < len(n.ColSpikeTraces) {
-					n.ColSpikeTraces[col] += 256
+					n.ColSpikeTraces[col] += columnarTraceIncrement
 				}
 			}
 		}

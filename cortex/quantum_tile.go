@@ -353,6 +353,7 @@ type QuantumRouter struct {
 	TopK             int
 	UsageCounts      []uint64 // accessed atomically
 	SDRSize          int
+	mu               sync.RWMutex
 }
 
 // NewQuantumRouter creates a quantum-inspired router with SDR embeddings.
@@ -381,6 +382,9 @@ func NewQuantumRouter(numExperts, sdrSize, topK int) *QuantumRouter {
 //
 // This ensures experts are relevant SEMANTICALLY first, with phase as a tiebreaker.
 func (r *QuantumRouter) RouteSDR(input SDR) []int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	type scored struct {
 		idx   int
 		score int32
@@ -398,7 +402,7 @@ func (r *QuantumRouter) RouteSDR(input SDR) []int {
 
 		// Secondary: phase interference bonus (-127 to +127 scaled by amplitude)
 		phaseDiff := r.ExpertPhases[i] - inputPhase
-		phaseBonus := int32(r.ExpertAmps[i]) * int32(cos256[phaseDiff]) / 128
+		phaseBonus := int32(r.ExpertAmps[i]) * int32(cos256[phaseDiff]) / (QuantumCosRange + 1)
 
 		scores[i] = scored{i, semanticScore + phaseBonus}
 	}
@@ -438,6 +442,9 @@ func (r *QuantumRouter) RouteSDR(input SDR) []int {
 
 // Route selects top-K using phase-only scoring (simple path, no SDR needed).
 func (r *QuantumRouter) Route(inputPhase uint8) []int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	type scored struct {
 		idx   int
 		score int32
@@ -487,6 +494,9 @@ func (r *QuantumRouter) Route(inputPhase uint8) []int {
 // This is Hebbian-like: experts that succeed become more "in phase" with
 // the inputs they're good at.
 func (r *QuantumRouter) UpdateExpertPhase(expertIdx int, inputPhase uint8, reward bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if expertIdx < 0 || expertIdx >= len(r.ExpertPhases) {
 		return
 	}
@@ -509,6 +519,15 @@ func (r *QuantumRouter) UpdateExpertPhase(expertIdx int, inputPhase uint8, rewar
 		if r.ExpertAmps[expertIdx] > QuantumAmplitudeAdjust {
 			r.ExpertAmps[expertIdx] -= QuantumAmplitudeAdjust
 		}
+	}
+}
+
+// UpdateEmbedding thread-safely merges the given input SDR into the expert's embedding.
+func (r *QuantumRouter) UpdateEmbedding(expertIdx int, input SDR) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if expertIdx >= 0 && expertIdx < len(r.ExpertEmbeddings) {
+		r.ExpertEmbeddings[expertIdx] = r.ExpertEmbeddings[expertIdx].Union(input)
 	}
 }
 

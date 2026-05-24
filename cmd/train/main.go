@@ -103,7 +103,7 @@ func main() {
 	}
 
 	if len(qaCorpus) == 0 && len(textCorpus) == 0 {
-		fmt.Println("  ❌ No training data found! Create qa.json and/or texts.txt in", dataDir)
+		fmt.Println("  ❌ No training data found! Create qa.json and/or texts.txt in", trainingDataDir)
 		os.Exit(1)
 	}
 	fmt.Println()
@@ -159,6 +159,7 @@ func main() {
 		// Build semantic frequencies from co-occurrence
 		if org.NeuroRadio != nil {
 			org.NeuroRadio.Codec.AssignFrequencies()
+			org.NeuroRadio.RebuildDecoder()
 			nTok, nFreq, nCooc := org.NeuroRadio.Codec.Stats()
 			fmt.Printf("  🎯 SemanticFreqCodec: %d tokens → %d frequencies (%d co-occurrences)\n",
 				nTok, nFreq, nCooc)
@@ -271,6 +272,7 @@ func main() {
 
 			// Re-assign semantic frequencies every epoch
 			org.NeuroRadio.Codec.AssignFrequencies()
+			org.NeuroRadio.RebuildDecoder()
 		}
 
 		fmt.Printf("\n  ✅ NeuroRadio training complete in %v\n", time.Since(nrStart))
@@ -313,7 +315,7 @@ func main() {
 		if matched {
 			icon = "✅"
 			correct++
-		} else if response != "" && response != "(no confident response)" {
+		} else if response != "" && response != cortex.NoConfidentResponse {
 			icon = "🔶"
 			partial++
 		}

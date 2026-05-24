@@ -18,6 +18,10 @@ const (
 	MaxFractalTopK      = 32
 )
 
+// DefaultQRouterTopK is the default number of experts selected per
+// routing decision when FractalTopK is not set or is zero.
+const DefaultQRouterTopK = 2
+
 // minActiveDivisor and minActiveFloor control the sparse-output fallback
 // threshold across ProcessToken, ProcessTokenTopK, and ProcessTokenQuantum.
 const (
@@ -66,7 +70,7 @@ func NewFractalCortex(cfg Config, engine interface{}) *FractalCortex {
 	// avoid routing to non-existent experts.
 	qrTopK := cfg.FractalTopK
 	if qrTopK <= 0 {
-		qrTopK = 2
+		qrTopK = DefaultQRouterTopK
 	}
 	if cfg.EnableQuantumInspired && len(fc.Blocks) > 0 {
 		fc.QRouter = NewQuantumRouter(len(fc.Blocks), cfg.SDRSize, qrTopK)
@@ -119,7 +123,7 @@ func (fc *FractalCortex) SpawnNeurogenesis() {
 	// Extend QRouter if it exists — add a new expert slot for the new block.
 	if fc.QRouter != nil {
 		fc.QRouter.ExpertPhases = append(fc.QRouter.ExpertPhases, 0)
-		fc.QRouter.ExpertAmps = append(fc.QRouter.ExpertAmps, 128)
+		fc.QRouter.ExpertAmps = append(fc.QRouter.ExpertAmps, QuantumAmplitudeNeutral)
 		fc.QRouter.ExpertEmbeddings = append(fc.QRouter.ExpertEmbeddings, NewSDR(fc.Config.SDRSize))
 		fc.QRouter.UsageCounts = append(fc.QRouter.UsageCounts, 0)
 	}
@@ -241,7 +245,7 @@ func (fc *FractalCortex) ProcessToken(input SDR) SDR {
 // with 64 experts, running only top-2 does 32x less work.
 func (fc *FractalCortex) ProcessTokenTopK(input SDR) SDR {
 	if fc.Router == nil {
-		return fc.ProcessToken(input)
+		return NewSDR(fc.Config.SDRSize)
 	}
 
 	selected := fc.Router.Route(input)
@@ -521,7 +525,7 @@ func (fc *FractalCortex) Load(dataDir string) error {
 			return fmt.Errorf("invalid context_len: %d (max %d)", contextLen, MaxFractalContextLen)
 		}
 		decayRate := uint8(meta.DecayRate)
-		if meta.DecayRate <= 0 {
+		if meta.DecayRate < 0 {
 			decayRate = uint8(fc.Config.FractalDecayRate)
 		}
 		for i := 0; i < meta.NumLayers; i++ {
@@ -547,7 +551,7 @@ func (fc *FractalCortex) Load(dataDir string) error {
 	if meta.QRouter != nil && fc.Config.EnableQuantumInspired {
 		loadTopK := fc.Config.FractalTopK
 		if loadTopK <= 0 {
-			loadTopK = 2
+			loadTopK = DefaultQRouterTopK
 		}
 		fc.QRouter = NewQuantumRouter(len(fc.Blocks), fc.Config.SDRSize, loadTopK)
 		// Restore learned phases and amplitudes (capped to actual block count)
@@ -577,7 +581,7 @@ func (fc *FractalCortex) ResetGrowthLock() {
 // the QuantumRouter (phase interference + SDR similarity scoring).
 func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
 	if fc.QRouter == nil {
-		return fc.ProcessToken(input)
+		return NewSDR(fc.Config.SDRSize)
 	}
 
 	selected := fc.QRouter.RouteSDR(input)
@@ -592,8 +596,8 @@ func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
 			return NewSDR(fc.Config.SDRSize)
 		}
 		result := fc.Blocks[idx].ProcessToken(input)
-		// Update expert embedding for learning
-		fc.QRouter.ExpertEmbeddings[idx] = fc.QRouter.ExpertEmbeddings[idx].Union(input)
+		// Update expert embedding for learning thread-safely
+		fc.QRouter.UpdateEmbedding(idx, input)
 		return result
 	}
 
@@ -617,8 +621,8 @@ func (fc *FractalCortex) ProcessTokenQuantum(input SDR) SDR {
 				voteCounts[bitIdx]++
 			}
 		}
-		// Update expert embedding for learning
-		fc.QRouter.ExpertEmbeddings[idx] = fc.QRouter.ExpertEmbeddings[idx].Union(input)
+		// Update expert embedding for learning thread-safely
+		fc.QRouter.UpdateEmbedding(idx, input)
 	}
 
 	// Majority among selected — use (len+1)/2 for proper majority

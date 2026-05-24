@@ -50,18 +50,18 @@ func (fc *FractalCortex) TrainSequence(sequence []SDR, learningRate uint8) {
 			// If this is the LAST virtual layer, apply STDP to the SharedOutputLayer
 			if i == activeBlock.NumLayers-1 {
 				// Compute error signal based on target SDR
-				errorSignal := make([]int16, activeBlock.Dim)
+				errorSignal := make([]int16, activeBlock.SharedOutputLayer.OutputSize)
 				
 				// Hebbian reinforcement: bits that SHOULD be active
 				for _, idx := range target.ActiveIndices() {
-					if idx < activeBlock.Dim {
+					if idx < activeBlock.SharedOutputLayer.OutputSize {
 						errorSignal[idx] = 1
 					}
 				}
 				
 				// Anti-Hebbian penalty: bits that were incorrectly predicted active
 				for _, idx := range current.ActiveIndices() {
-					if idx < activeBlock.Dim && !target.IsActive(idx) {
+					if idx < activeBlock.SharedOutputLayer.OutputSize && !target.IsActive(idx) {
 						errorSignal[idx] = -1
 					}
 				}

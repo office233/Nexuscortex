@@ -100,7 +100,7 @@ func runSuite(name string, cases []TestCase, organismForCase func() *Organism) S
 		org := organismForCase()
 		response := org.Process(tc.Input)
 		conf := org.Prefrontal.GetConfidence()
-		if response == "(no confident response)" {
+		if response == NoConfidentResponse {
 			conf = 0
 		}
 

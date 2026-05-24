@@ -31,7 +31,7 @@ func TestOrganismNoEchoRegression(t *testing.T) {
 	}
 
 	// Since there is no learned data, the response should fall back to the no-confidence policy.
-	expected := "(no confident response)"
+	expected := NoConfidentResponse
 	if response != expected {
 		t.Errorf("expected low-confidence fallback %q for empty brain, got: %q", expected, response)
 	}
@@ -214,7 +214,7 @@ func TestOrganismSuppressesLowConfidenceUnknownResponse(t *testing.T) {
 	org.Learn("the hippocampus stores episodic memories")
 
 	response := org.Process("who invented the imaginary tensor loom?")
-	if response != "(no confident response)" {
+	if response != NoConfidentResponse {
 		t.Fatalf("expected unknown prompt to produce low-confidence fallback, got %q", response)
 	}
 }

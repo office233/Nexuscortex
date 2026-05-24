@@ -23,6 +23,9 @@ func (l *TernaryLayer) UpdateProbabilisticSTDP(preSynaptic []int16, errorSignal 
 	if learningRate == 0 {
 		return
 	}
+	if len(preSynaptic) < l.InputSize || len(errorSignal) < l.OutputSize {
+		return
+	}
 
 	// Fast xorshift PRNG state seeded by time
 	prngState := uint64(time.Now().UnixNano())

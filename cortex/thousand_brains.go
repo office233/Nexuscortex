@@ -225,7 +225,7 @@ func (tb *ThousandBrains) Process(input SDR) SDR {
 // columns' Belief SDRs. This filters out noise: only strongly
 // corroborated bits survive.
 func (tb *ThousandBrains) Vote() SDR {
-	tb.Consensus.Reset()
+	result := NewSDR(tb.ColNeurons)
 	threshold := tb.ColumnCount / 2 // >50% means strictly greater than half
 
 	// Clear the pre-allocated votes slice
@@ -258,11 +258,11 @@ func (tb *ThousandBrains) Vote() SDR {
 	// Set bits that exceed the majority threshold.
 	for i := 0; i < tb.ColNeurons; i++ {
 		if tb.votes[i] > threshold {
-			tb.Consensus.Set(i)
+			result.Set(i)
 		}
 	}
 
-	return tb.Consensus
+	return result
 }
 
 // ─────────────────────────────────────────────────────────────────────

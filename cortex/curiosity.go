@@ -98,12 +98,14 @@ func NewCuriosityDrive(cfg Config) *CuriosityDrive {
 //     - All high errors → ExplorationRate decreases (overwhelmed).
 //     - Mixed errors    → ExplorationRate increases (lots to learn).
 func (c *CuriosityDrive) ObserveError(predictionError uint8, topic string) {
-	// 1. Record the error in rolling history.
+	// 1. Record the error in rolling history (ring buffer to avoid backing array leak).
 	if len(c.RecentErrors) >= c.MaxErrorHistory && c.MaxErrorHistory > 0 {
-		// Drop the oldest entry (FIFO).
-		c.RecentErrors = c.RecentErrors[1:]
+		// Drop the oldest entry (FIFO) using copy to avoid backing array leak.
+		copy(c.RecentErrors, c.RecentErrors[1:])
+		c.RecentErrors[len(c.RecentErrors)-1] = predictionError
+	} else {
+		c.RecentErrors = append(c.RecentErrors, predictionError)
 	}
-	c.RecentErrors = append(c.RecentErrors, predictionError)
 
 	// 2. Update per-topic interest.
 	interest := c.InterestMap[topic]
@@ -342,11 +344,25 @@ func LoadCuriosityDrive(path string, cfg Config) (*CuriosityDrive, error) {
 	if rateStep == 0 {
 		rateStep = 10
 	}
+	boredT := data.BoredThreshold
+	if boredT == 0 {
+		boredT = uint8(cfg.CuriosityBoredThreshold)
+		if boredT == 0 {
+			boredT = 40
+		}
+	}
+	overwhelmT := data.OverwhelmThresh
+	if overwhelmT == 0 {
+		overwhelmT = uint8(cfg.CuriosityOverwhelmThreshold)
+		if overwhelmT == 0 {
+			overwhelmT = 200
+		}
+	}
 	return &CuriosityDrive{
 		ExplorationRate:   data.ExplorationRate,
 		InterestMap:       data.InterestMap,
-		BoredThreshold:    data.BoredThreshold,
-		OverwhelmThresh:   data.OverwhelmThresh,
+		BoredThreshold:    boredT,
+		OverwhelmThresh:   overwhelmT,
 		InterestIncrement: interestInc,
 		InterestDecay:     interestDec,
 		RateStep:          rateStep,

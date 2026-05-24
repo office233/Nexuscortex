@@ -71,10 +71,14 @@ func NewSequenceMemory(cfg Config) *SequenceMemory {
 	if ltdAmount == 0 {
 		ltdAmount = 40
 	}
+	incWeight := cfg.SequenceMemoryIncrementWeight
+	if incWeight == 0 {
+		incWeight = 10
+	}
 	return &SequenceMemory{
 		Windows:         windows,
 		MaxTargets:      maxTargets,
-		IncrementWeight: cfg.SequenceMemoryIncrementWeight,
+		IncrementWeight: incWeight,
 		LTPAmount:       ltpAmount,
 		LTDAmount:       ltdAmount,
 	}
@@ -125,9 +129,6 @@ func (sm *SequenceMemory) Learn(wordIDs []uint32) {
 func (sm *SequenceMemory) addTransition(cw *ContextWindow, hash uint64, targetID uint32) {
 	transitions := cw.Transitions[hash]
 	incWeight := sm.IncrementWeight
-	if incWeight == 0 {
-		incWeight = 10
-	}
 
 	// Look for existing transition.
 	for i := range transitions {
@@ -239,9 +240,12 @@ func (sm *SequenceMemory) Predict(context []uint32, recentlyUsed map[uint32]int)
 		return 0, false
 	}
 
-	// Sort by score descending.
+	// Sort by score descending, with deterministic tie-breaking by id.
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].id < candidates[j].id
 	})
 
 	return candidates[0].id, true
@@ -304,7 +308,10 @@ func (sm *SequenceMemory) Save(path string) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("sequence memory sync: %w", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("sequence memory close: %w", err)
+	}
 	return os.Rename(tmpPath, path)
 }
 
@@ -344,7 +351,11 @@ func LoadSequenceMemory(path string, cfg Config) (*SequenceMemory, error) {
 		maxTargets = 64
 	}
 	sm.MaxTargets = maxTargets
-	sm.IncrementWeight = cfg.SequenceMemoryIncrementWeight
+	incWeight := cfg.SequenceMemoryIncrementWeight
+	if incWeight == 0 {
+		incWeight = 10
+	}
+	sm.IncrementWeight = incWeight
 	ltpAmount := cfg.SequenceMemoryLTPAmount
 	if ltpAmount == 0 {
 		ltpAmount = 50

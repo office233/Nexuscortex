@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"time"
 )
 
 // Binary format for RadioCortex persistence:
 //
 //   Offset  Size   Field
-//   ──────  ─────  ─────────────────
+//   ------  -----  -----------------
 //   0       4      Magic bytes "NXRC"
 //   4       1      Version (1)
 //   5       4      Size (uint32, neuron count)
@@ -148,7 +149,9 @@ func SaveRadioCortexWithCodec(rc *RadioCortex, codec *SignalCodec, path string) 
 //
 // If the file contained a non-zero vocabSize, a new SignalCodec is
 // also returned; otherwise codec is nil.
-func LoadRadioCortex(path string) (*RadioCortex, *SignalCodec, error) {
+//
+// Accepts an optional variadic Config argument to override defaults.
+func LoadRadioCortex(path string, cfg ...Config) (*RadioCortex, *SignalCodec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read radio cortex file: %w", err)
@@ -177,6 +180,11 @@ func LoadRadioCortex(path string) (*RadioCortex, *SignalCodec, error) {
 	// Size.
 	size := int(binary.LittleEndian.Uint32(data[off:]))
 	off += 4
+
+	// Safety check: reject unreasonable neuron counts from untrusted files
+	if size < 0 || size > 100_000_000 {
+		return nil, nil, fmt.Errorf("radio cortex file has invalid neuron count: %d", size)
+	}
 
 	// Validate total file size.
 	expectedSize := radioHeaderSize + size*4
@@ -227,14 +235,25 @@ func LoadRadioCortex(path string) (*RadioCortex, *SignalCodec, error) {
 		OutputEnd:     outputEnd,
 		FireThreshold: fireThreshold,
 		PhaseWindow:   phaseWindow,
-		// Defaults matching NewRadioCortex so standalone callers work
-		TrainAmplitude:      200,
-		ResonanceThreshold:  20,
-		WeakNeuronThreshold: 32,
-		GenerateWindowSize:  8,
-		AntiLoopMaxRepeat:   2,
-		DecodeTopK:          5,
-		rng:           rand.New(rand.NewSource(int64(tickCount))),
+		// Defaults from central Config so standalone callers work
+		TrainAmplitude:      DefaultConfig().RadioTrainAmplitude,
+		ResonanceThreshold:  DefaultConfig().RadioResonanceThreshold,
+		WeakNeuronThreshold: DefaultConfig().RadioWeakNeuronThreshold,
+		GenerateWindowSize:  DefaultConfig().RadioGenerateWindowSize,
+		AntiLoopMaxRepeat:   DefaultConfig().RadioAntiLoopMaxRepeat,
+		DecodeTopK:          DefaultConfig().RadioDecodeTopK,
+		rng:           rand.New(rand.NewSource(int64(tickCount) ^ time.Now().UnixNano())),
+	}
+
+	// Apply config overrides if provided
+	if len(cfg) > 0 {
+		c := cfg[0]
+		rc.TrainAmplitude = c.RadioTrainAmplitude
+		rc.ResonanceThreshold = c.RadioResonanceThreshold
+		rc.WeakNeuronThreshold = c.RadioWeakNeuronThreshold
+		rc.GenerateWindowSize = c.RadioGenerateWindowSize
+		rc.AntiLoopMaxRepeat = c.RadioAntiLoopMaxRepeat
+		rc.DecodeTopK = c.RadioDecodeTopK
 	}
 
 	// Reconstruct SignalCodec if a vocab size was stored.

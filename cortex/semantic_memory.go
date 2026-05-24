@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -26,29 +27,38 @@ import (
 
 // Concept represents an abstracted category or invariant prototype.
 type Concept struct {
-	Prototype   SDR      `json:"-"`        // Invariant active bits
+	Prototype   SDR      `json:"-"`        // Invariant active bits (excluded from default JSON; Save/Load use custom binary encoding)
 	Count       int      `json:"count"`    // Number of episodic memories that formed this concept
 	Contexts    []string `json:"contexts"` // List of unique contextual prompts/words associated with it
 }
 
 // SemanticMemory holds the collection of generalized neocortical concepts.
 type SemanticMemory struct {
+	mu           sync.Mutex
 	Concepts     []Concept `json:"concepts"`
 	SDRSize      int       `json:"sdr_size"`
 	SimThreshold uint8     `json:"sim_threshold"` // Similarity threshold for concept match (default 80)
+	Config       Config    `json:"-"`
 }
 
 // NewSemanticMemory instantiates a new empty semantic memory.
 // Accepts an optional Config to set the similarity threshold.
 func NewSemanticMemory(sdrSize int, cfgs ...Config) *SemanticMemory {
 	var simThresh uint8 = 80
-	if len(cfgs) > 0 && cfgs[0].SemanticMemorySimThreshold > 0 {
-		simThresh = cfgs[0].SemanticMemorySimThreshold
+	var cfg Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+		if cfg.SemanticMemorySimThreshold > 0 {
+			simThresh = cfg.SemanticMemorySimThreshold
+		}
+	} else {
+		cfg = DefaultConfig()
 	}
 	return &SemanticMemory{
 		Concepts:     make([]Concept, 0),
 		SDRSize:      sdrSize,
 		SimThreshold: simThresh,
+		Config:       cfg,
 	}
 }
 
@@ -69,11 +79,11 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 		return
 	}
 
-	// Use configurable similarity threshold
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Use configurable similarity threshold (set by constructor or loader).
 	simThreshold := sm.SimThreshold
-	if simThreshold == 0 {
-		simThreshold = 80
-	}
 
 	mergedMemories := make(map[int]bool)
 
@@ -106,11 +116,15 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 			//
 			// NEW: Merge new evidence into the prototype (union of episode bits
 			// for young concepts to absorb novel information).
-			if c.Count < 10 {
+			maturityThresh := sm.Config.SemanticMemoryConceptMaturity
+			if maturityThresh <= 0 {
+				maturityThresh = 10
+			}
+			if c.Count < maturityThresh {
 				// Young concept: absorb novel bits from episode to grow the prototype
 				c.Prototype = c.Prototype.Union(m.Input)
 			}
-			// For mature concepts (Count >= 10), the prototype stays as-is.
+			// For mature concepts (Count >= maturityThresh), the prototype stays as-is.
 			// The episode validates the concept but doesn't modify it.
 			c.Count++
 
@@ -130,10 +144,13 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 	}
 
 	// Phase 1b: Prune degenerate concepts whose prototypes have shrunk too much.
-	const MinViableBits = 5
+	minViableBits := sm.Config.SemanticMemoryMinViableBits
+	if minViableBits <= 0 {
+		minViableBits = 5
+	}
 	alive := make([]Concept, 0, len(sm.Concepts))
 	for _, c := range sm.Concepts {
-		if c.Prototype.ActiveCount >= MinViableBits {
+		if c.Prototype.ActiveCount >= minViableBits {
 			alive = append(alive, c)
 		}
 	}
@@ -157,8 +174,14 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 				// Overlapping memory traces found. Generalize via intersection!
 				proto := m1.Input.Intersect(m2.Input)
 
-				// Ensure the intersection actually yields a coherent pattern.
-				if proto.ActiveCount >= 2 {
+				// Ensure the intersection yields a coherent pattern.
+				// minViableBits: minimum active bits for a concept to be useful.
+				// Default = Config.SemanticMemoryMinViableBits (currently 2).
+				minViableBits := sm.SimThreshold / 40 // scales with threshold
+				if minViableBits < 2 {
+					minViableBits = 2
+				}
+				if proto.ActiveCount >= int(minViableBits) {
 					var contexts []string
 					if m1.Context != "" {
 						contexts = append(contexts, m1.Context)
@@ -202,6 +225,9 @@ type semanticMemoryJSON struct {
 // Save serializes the semantic memory concepts to a JSON file.
 // Prototype SDRs are stored as space-efficient active indices arrays.
 func (sm *SemanticMemory) Save(path string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
 	aux := semanticMemoryJSON{
 		Concepts:     make([]conceptJSON, len(sm.Concepts)),
 		SDRSize:      sm.SDRSize,
@@ -242,7 +268,9 @@ func LoadSemanticMemory(path string, sdrSize int, cfgs ...Config) (*SemanticMemo
 		return nil, fmt.Errorf("semantic memory unmarshal: %w", err)
 	}
 
-	// Validate limits to prevent OOM from corrupted JSON
+	// Defensive safety limits — intentionally hardcoded, NOT configurable.
+	// These prevent out-of-memory panics from corrupted or malicious JSON files.
+	// They are far above any reasonable operational size.
 	const maxSemanticSDRSize = 100_000
 	const maxSemanticConcepts = 100_000
 	const maxConceptActiveIndices = 10_000
@@ -256,15 +284,22 @@ func LoadSemanticMemory(path string, sdrSize int, cfgs ...Config) (*SemanticMemo
 	}
 
 	// Restore SimThreshold: prefer persisted value, fall back to Config, then default 80.
+	var cfg Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	} else {
+		cfg = DefaultConfig()
+	}
 	simThresh := aux.SimThreshold
-	if simThresh == 0 && len(cfgs) > 0 && cfgs[0].SemanticMemorySimThreshold > 0 {
-		simThresh = cfgs[0].SemanticMemorySimThreshold
+	if simThresh == 0 && cfg.SemanticMemorySimThreshold > 0 {
+		simThresh = cfg.SemanticMemorySimThreshold
 	}
 
 	sm := &SemanticMemory{
 		Concepts:     make([]Concept, len(aux.Concepts)),
 		SDRSize:      aux.SDRSize,
 		SimThreshold: simThresh,
+		Config:       cfg,
 	}
 
 	if sm.SDRSize <= 0 {

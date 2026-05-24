@@ -30,6 +30,8 @@ type StatsResponse struct {
 	LastFocusTarget string `json:"last_focus_target"`
 }
 
+const maxPortRetries = 200
+
 // Server holds the thread-safe web server context
 type Server struct {
 	org        *cortex.Organism
@@ -181,8 +183,8 @@ func main() {
 	}
 
 	actualPort := startPort
-	// Search up to 200 consecutive ports to guarantee we find a free one
-	for p := startPort; p < startPort+200; p++ {
+	// Search up to maxPortRetries consecutive ports to guarantee we find a free one
+	for p := startPort; p < startPort+maxPortRetries; p++ {
 		// Bind to configured address; the dashboard mutates local model state.
 		addr := fmt.Sprintf("%s:%d", cfg.WebBindAddr, p)
 		listener, bindErr = net.Listen("tcp", addr)
@@ -197,7 +199,7 @@ func main() {
 	}
 
 	if bindErr != nil {
-		log.Fatalf("  ❌ Failed to bind to any port in range %d-%d: %v", startPort, startPort+199, bindErr)
+		log.Fatalf("  ❌ Failed to bind to any port in range %d-%d: %v", startPort, startPort+maxPortRetries-1, bindErr)
 	}
 	defer listener.Close()
 
@@ -212,7 +214,11 @@ func main() {
 	}
 
 	fmt.Printf("  🖥️  Listening for HTTP requests on http://localhost:%d\n", actualPort)
-	fmt.Printf("  🔑 Security Token: %s\n", server.token)
+	tokenStatus := server.token
+	if tokenStatus == "" {
+		tokenStatus = "DISABLED"
+	}
+	fmt.Printf("  🔑 Security Token: %s\n", tokenStatus)
 	if err := http.Serve(listener, nil); err != nil {
 		log.Fatalf("  ❌ Failed to serve HTTP: %v", err)
 	}
@@ -389,7 +395,7 @@ func (s *Server) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		source = "Prefrontal Think"
 	}
 
-	if response == "(no confident response)" {
+	if response == cortex.NoConfidentResponse {
 		source = "System Fallback"
 	}
 

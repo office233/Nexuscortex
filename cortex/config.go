@@ -5,6 +5,9 @@ import (
 	"strconv"
 )
 
+// NoConfidentResponse is the sentinel returned when no prediction meets confidence threshold.
+const NoConfidentResponse = "(no confident response)"
+
 // Config represents all configurations, sizes, thresholds, seeds, paths,
 // and learning knobs for the Nexus Cortex digital organism.
 type Config struct {
@@ -299,6 +302,19 @@ type Config struct {
 
 	// Autonomous learner
 	AutoLowConfThreshold int `json:"auto_low_conf_threshold"` // Low confidence threshold (default 100)
+
+	// Master Bug Fix & Audit Verification parameters
+	SelfEvaluatorPassThreshold    float64 `json:"self_evaluator_pass_threshold"`
+	FeedbackPositiveReward        int8    `json:"feedback_positive_reward"`
+	FeedbackNegativeReward        int8    `json:"feedback_negative_reward"`
+	FeedbackNegativeArousal       uint8   `json:"feedback_negative_arousal"`
+	AutoLearnErrorBoost           uint8   `json:"auto_learn_error_boost"`
+	CorpusMinTextLen              int     `json:"corpus_min_text_len"`
+	MemoryMinTextLen              int     `json:"memory_min_text_len"`
+	SemanticMemoryConceptMaturity int     `json:"semantic_memory_concept_maturity"`
+	SemanticMemoryMinViableBits   int     `json:"semantic_memory_min_viable_bits"`
+	AutoMaxGaps                   int     `json:"auto_max_gaps"`
+	TransformerEOSTokenID         int     `json:"transformer_eos_token_id"`
 }
 
 // DefaultConfig returns a configuration with sensible biological and cognitive defaults.
@@ -573,7 +589,7 @@ func DefaultConfig() Config {
 		// NeuroRadioCortex defaults
 		NRCDecodeActiveThreshold: 5,
 		NRCInitAmpMin:            100,
-		NRCInitAmpRange:          156,
+		NRCInitAmpRange:          155,
 		NRCInhibitoryRatioDiv:    5,
 		NRCInjectAmplitude:       200,
 
@@ -609,6 +625,19 @@ func DefaultConfig() Config {
 
 		// Autonomous learner defaults
 		AutoLowConfThreshold: 100,
+
+		// Master Bug Fix & Audit Verification defaults
+		SelfEvaluatorPassThreshold:    0.3,
+		FeedbackPositiveReward:        100,
+		FeedbackNegativeReward:        -100,
+		FeedbackNegativeArousal:       100,
+		AutoLearnErrorBoost:           200,
+		CorpusMinTextLen:              20,
+		MemoryMinTextLen:              10,
+		SemanticMemoryConceptMaturity: 10,
+		SemanticMemoryMinViableBits:   5,
+		AutoMaxGaps:                   1000,
+		TransformerEOSTokenID:         3,
 	}
 }
 
@@ -762,6 +791,49 @@ func (c Config) Validate() error {
 	// Quantum-Inspired Engine constraints
 	if c.QuantumMultiSamples < 1 || c.QuantumMultiSamples > 16 {
 		return fmt.Errorf("QuantumMultiSamples must be in [1, 16], got %d", c.QuantumMultiSamples)
+	}
+
+	// Master Bug Fix & Audit Verification validation
+	if c.SelfEvaluatorPassThreshold < 0.0 || c.SelfEvaluatorPassThreshold > 1.0 {
+		return fmt.Errorf("SelfEvaluatorPassThreshold must be in [0.0, 1.0], got %f", c.SelfEvaluatorPassThreshold)
+	}
+	if c.FeedbackPositiveReward < 0 {
+		return fmt.Errorf("FeedbackPositiveReward must be in [0, 127], got %d", c.FeedbackPositiveReward)
+	}
+	if c.FeedbackNegativeReward > 0 {
+		return fmt.Errorf("FeedbackNegativeReward must be in [-128, 0], got %d", c.FeedbackNegativeReward)
+	}
+	if c.CorpusMinTextLen <= 0 {
+		return fmt.Errorf("CorpusMinTextLen must be > 0, got %d", c.CorpusMinTextLen)
+	}
+	if c.MemoryMinTextLen <= 0 {
+		return fmt.Errorf("MemoryMinTextLen must be > 0, got %d", c.MemoryMinTextLen)
+	}
+	if c.SemanticMemoryConceptMaturity <= 0 {
+		return fmt.Errorf("SemanticMemoryConceptMaturity must be > 0, got %d", c.SemanticMemoryConceptMaturity)
+	}
+	if c.SemanticMemoryMinViableBits <= 0 {
+		return fmt.Errorf("SemanticMemoryMinViableBits must be > 0, got %d", c.SemanticMemoryMinViableBits)
+	}
+	if c.AutoMaxGaps <= 0 {
+		return fmt.Errorf("AutoMaxGaps must be > 0, got %d", c.AutoMaxGaps)
+	}
+	if c.TransformerEOSTokenID < 0 {
+		return fmt.Errorf("TransformerEOSTokenID must be >= 0, got %d", c.TransformerEOSTokenID)
+	}
+
+	// NeuroRadioCortex amplitude constraints — prevent uint8 overflow in neurogenesis.
+	// InitAmpMin + InitAmpRange must fit in uint8 (0-255) so that
+	// uint8(initAmpMin + rng.Intn(initAmpRange)) never truncates.
+	if c.NRCInitAmpMin < 0 || c.NRCInitAmpMin > 255 {
+		return fmt.Errorf("NRCInitAmpMin must be in [0, 255], got %d", c.NRCInitAmpMin)
+	}
+	if c.NRCInitAmpRange < 0 || c.NRCInitAmpRange > 255 {
+		return fmt.Errorf("NRCInitAmpRange must be in [0, 255], got %d", c.NRCInitAmpRange)
+	}
+	if c.NRCInitAmpMin+c.NRCInitAmpRange > 255 {
+		return fmt.Errorf("NRCInitAmpMin (%d) + NRCInitAmpRange (%d) = %d exceeds uint8 max 255",
+			c.NRCInitAmpMin, c.NRCInitAmpRange, c.NRCInitAmpMin+c.NRCInitAmpRange)
 	}
 
 	return nil

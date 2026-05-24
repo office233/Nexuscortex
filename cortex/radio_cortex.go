@@ -2,6 +2,7 @@ package cortex
 
 import (
 	"math/rand"
+	"sync"
 )
 
 // RadioCortex is a frequency-based neural processor where neurons communicate
@@ -39,17 +40,18 @@ type RadioCortex struct {
 	PhaseWindow   uint8 // phase match tolerance (default 90 = ~127°)
 
 	// Configurable parameters from central Config (set during construction)
-	TrainAmplitude      int // EncodeTokens amplitude for training/generation
-	ResonanceThreshold  int // Resonance threshold for input activation
-	WeakNeuronThreshold int // Weak neuron frequency drift threshold
-	GenerateWindowSize  int // Generation context window size
-	AntiLoopMaxRepeat   int // Anti-loop repetition max
-	DecodeTopK          int // DecodeTopK fallback k
+	TrainAmplitude      int // = Config.RadioTrainAmplitude — EncodeTokens amplitude for training/generation
+	ResonanceThreshold  int // = Config.RadioResonanceThreshold — Resonance threshold for input activation
+	WeakNeuronThreshold int // = Config.RadioWeakNeuronThreshold — Weak neuron frequency drift threshold
+	GenerateWindowSize  int // = Config.RadioGenerateWindowSize — Generation context window size
+	AntiLoopMaxRepeat   int // = Config.RadioAntiLoopMaxRepeat — Anti-loop repetition max
+	DecodeTopK          int // = Config.RadioDecodeTopK — DecodeTopK fallback k
 
 	// GPU acceleration (nil = CPU fallback)
 	GPU *RadioCUDA
 
 	rng *rand.Rand
+	mu  sync.Mutex // protects all mutable state from concurrent access
 }
 
 // RadioCortexStats holds statistics about the radio cortex state.
@@ -88,13 +90,13 @@ func NewRadioCortex(size int, rng *rand.Rand) *RadioCortex {
 		OutputEnd:     size,
 		FireThreshold: 64,
 		PhaseWindow:   90,
-		// Configurable defaults (overridden by Organism from Config)
-		TrainAmplitude:      200,
-		ResonanceThreshold:  20,
-		WeakNeuronThreshold: 32,
-		GenerateWindowSize:  8,
-		AntiLoopMaxRepeat:   2,
-		DecodeTopK:          5,
+		// Configurable defaults from central Config (overridden by Organism)
+		TrainAmplitude:      DefaultConfig().RadioTrainAmplitude,
+		ResonanceThreshold:  DefaultConfig().RadioResonanceThreshold,
+		WeakNeuronThreshold: DefaultConfig().RadioWeakNeuronThreshold,
+		GenerateWindowSize:  DefaultConfig().RadioGenerateWindowSize,
+		AntiLoopMaxRepeat:   DefaultConfig().RadioAntiLoopMaxRepeat,
+		DecodeTopK:          DefaultConfig().RadioDecodeTopK,
 		rng:           rng,
 	}
 
@@ -128,6 +130,8 @@ func NewRadioCortex(size int, rng *rand.Rand) *RadioCortex {
 // Step runs one tick of the radio cortex.
 // Returns the number of neurons that fired.
 func (rc *RadioCortex) Step() int {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	// Save previous firing state and clear current
 	rc.PrevFired, rc.Fired = rc.Fired, rc.PrevFired
 	for i := range rc.Fired {
@@ -187,6 +191,8 @@ func (rc *RadioCortex) Step() int {
 // InjectSignal manually activates input neurons matching the given frequencies.
 // This is how external input enters the radio cortex.
 func (rc *RadioCortex) InjectSignal(frequencies []uint8, amplitude uint8) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	freqSet := make(map[uint8]bool, len(frequencies))
 	for _, f := range frequencies {
 		freqSet[f] = true
@@ -204,10 +210,18 @@ func (rc *RadioCortex) InjectSignal(frequencies []uint8, amplitude uint8) {
 // InjectSDR converts an SDR into frequency activations on the bus.
 // Active SDR bits are mapped to frequencies: freq = bit_index % 256
 func (rc *RadioCortex) InjectSDR(sdr SDR) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	indices := sdr.ActiveIndices()
 	for _, idx := range indices {
 		freq := uint8(idx % 256)
-		rc.Bus.Emit(freq, uint8(rc.TrainAmplitude), uint8(idx%256), false)
+		amp := rc.TrainAmplitude
+		if amp < 0 {
+			amp = 0
+		} else if amp > 255 {
+			amp = 255
+		}
+		rc.Bus.Emit(freq, uint8(amp), uint8(idx%256), false)
 	}
 	// Also activate matching input neurons
 	for i := rc.InputStart; i < rc.InputEnd; i++ {
@@ -215,7 +229,10 @@ func (rc *RadioCortex) InjectSDR(sdr SDR) {
 		signal, busPhase := rc.Bus.Read(n.FreqListen())
 		if signal > 0 {
 			resonance := Resonance(n.Phase(), busPhase)
-			if resonance > int8(rc.ResonanceThreshold) { // configurable match threshold
+			thresh := rc.ResonanceThreshold
+			if thresh > 127 { thresh = 127 }
+			if thresh < -128 { thresh = -128 }
+			if resonance > int8(thresh) { // configurable match threshold
 				rc.Fired[i] = true
 			}
 		}
@@ -231,6 +248,8 @@ func (rc *RadioCortex) ReadFiringPattern() []bool {
 
 // ReadOutputSDR reads the output region's firing pattern as an SDR.
 func (rc *RadioCortex) ReadOutputSDR(sdrSize int) SDR {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	sdr := NewSDR(sdrSize)
 	outputSpan := rc.OutputEnd - rc.OutputStart
 	if outputSpan == 0 {
@@ -251,6 +270,8 @@ func (rc *RadioCortex) ReadOutputSDR(sdrSize int) SDR {
 // Confirm strengthens neurons that contributed to a correct output (Hebbian LTP).
 // Amplitude increases by 1 (capped at 255).
 func (rc *RadioCortex) Confirm() {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	for i := range rc.Neurons {
 		if !rc.Fired[i] {
 			continue
@@ -266,6 +287,8 @@ func (rc *RadioCortex) Confirm() {
 // Contradict weakens neurons that contributed to a wrong output (Hebbian LTD).
 // Amplitude decreases by 1. Weak neurons drift their frequency (re-tune).
 func (rc *RadioCortex) Contradict() {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	for i := range rc.Neurons {
 		if !rc.Fired[i] {
 			continue
@@ -314,7 +337,7 @@ func (rc *RadioCortex) Neurogenesis() int {
 		rc.Neurons[i] = PackRadioNeuron(
 			freqListen,
 			uint8(rc.rng.Intn(256)),
-			uint8(64+rc.rng.Intn(64)), // moderate starting amplitude
+			uint8(64+rc.rng.Intn(128)), // start at unified starting amplitude (64-191)
 			freqEmit,
 			inhibitory,
 		)
@@ -399,8 +422,11 @@ func (rc *RadioCortex) StepGPU(nTicks int) {
 // InjectGPU injects frequencies into the GPU bus.
 func (rc *RadioCortex) InjectGPU(freqs []uint8, amplitude int16) {
 	if rc.GPU == nil || !rc.GPU.IsAvailable() {
-		// CPU fallback: use InjectSignal
-		rc.InjectSignal(freqs, uint8(amplitude))
+		// CPU fallback: use InjectSignal (clamp int16 to uint8 range)
+		clampedAmp := amplitude
+		if clampedAmp < 0 { clampedAmp = 0 }
+		if clampedAmp > 255 { clampedAmp = 255 }
+		rc.InjectSignal(freqs, uint8(clampedAmp))
 		return
 	}
 

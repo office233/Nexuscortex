@@ -82,8 +82,13 @@ func (n RadioNeuron) IsAlive() bool { return n.Amplitude() > 0 }
 // Uses cos256 lookup table from quantum_tile.go.
 // Returns [-127, +127]: +127 = perfect resonance, -127 = anti-resonance, 0 = neutral.
 func Resonance(neuronPhase, busPhase uint8) int8 {
-	// Scale 7-bit phase (0-127 = 0°-360°) to 8-bit (0-255) for cos256 table lookup
-	delta7 := (neuronPhase & 0x7F) - (busPhase & 0x7F)
-	delta8 := delta7 << 1 // Scale 7-bit (0-127) to 8-bit (0-255) for cos256
+	// Compute signed 7-bit phase difference to avoid uint8 underflow.
+	// int8 subtraction handles the case where neuronPhase < busPhase correctly
+	// (e.g., 5 - 10 = -5 instead of 251).
+	delta7 := int8(neuronPhase&0x7F) - int8(busPhase&0x7F)
+	// Convert back to uint8 for cos256 lookup — the table is indexed by
+	// unsigned byte and naturally handles negative deltas via wrap-around
+	// (cos is symmetric: cos(-x) == cos(x) in the 256-entry table).
+	delta8 := uint8(delta7) << 1 // Scale 7-bit (0-127) to 8-bit (0-255) for cos256
 	return cos256[delta8]
 }

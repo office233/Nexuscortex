@@ -13,6 +13,7 @@ import (
 func main() {
 	dataDir := flag.String("data-dir", "./data/cortex", "Path to organism data")
 	query := flag.String("q", "What is DNA?", "Query to diagnose")
+	expected := flag.String("expected", "DNA is deoxyribonucleic acid that carries genetic information", "Expected answer text to measure SDR similarity against")
 	flag.Parse()
 
 	cfg := cortex.DefaultConfig()
@@ -109,7 +110,7 @@ func main() {
 		fmt.Println()
 	}
 
-	if response == "(no confident response)" {
+	if response == cortex.NoConfidentResponse {
 		issues++
 		fmt.Println("   🔴 KILLER #2: Final response is empty!")
 		fmt.Println("      → Even if Hippocampus found something, it was killed by confidence gate")
@@ -117,22 +118,30 @@ func main() {
 	}
 
 	// Test SDR similarity between question and stored answer
-	testAnswer := "DNA is deoxyribonucleic acid that carries genetic information"
-	answerSDR := org.Encoder.EncodeSentence(testAnswer)
-	overlapCount := sdr.Overlap(answerSDR)
-	simScore := sdr.Similarity(answerSDR)
-	simPercent := float64(simScore) * 100 / 255
-	fmt.Printf("   📐 SDR SIMILARITY TEST:\n")
-	fmt.Printf("      Query SDR:  %d active bits\n", sdr.ActiveCount)
-	fmt.Printf("      Answer SDR: %d active bits\n", answerSDR.ActiveCount)
-	fmt.Printf("      Overlap:    %d bits (similarity=%d/255 = %.1f%%)\n", overlapCount, simScore, simPercent)
-	if simPercent < 10 {
-		issues++
-		fmt.Println("      🔴 VERY LOW similarity — encoder produces unrelated SDRs!")
-	} else if simPercent < 30 {
-		fmt.Println("      🟡 Low similarity — may cause retrieval issues")
+	queryIsDefault := *query == "What is DNA?"
+	expectedIsDefault := *expected == "DNA is deoxyribonucleic acid that carries genetic information"
+
+	if queryIsDefault || !expectedIsDefault {
+		testAnswer := *expected
+		answerSDR := org.Encoder.EncodeSentence(testAnswer)
+		overlapCount := sdr.Overlap(answerSDR)
+		simScore := sdr.Similarity(answerSDR)
+		simPercent := float64(simScore) * 100 / 255
+		fmt.Printf("   📐 SDR SIMILARITY TEST:\n")
+		fmt.Printf("      Target Answer: %q\n", truncate(testAnswer, 60))
+		fmt.Printf("      Query SDR:     %d active bits\n", sdr.ActiveCount)
+		fmt.Printf("      Answer SDR:    %d active bits\n", answerSDR.ActiveCount)
+		fmt.Printf("      Overlap:       %d bits (similarity=%d/255 = %.1f%%)\n", overlapCount, simScore, simPercent)
+		if simPercent < 10 {
+			issues++
+			fmt.Println("      🔴 VERY LOW similarity — encoder produces unrelated SDRs!")
+		} else if simPercent < 30 {
+			fmt.Println("      🟡 Low similarity — may cause retrieval issues")
+		} else {
+			fmt.Println("      ✅ Reasonable similarity")
+		}
 	} else {
-		fmt.Println("      ✅ Reasonable similarity")
+		fmt.Printf("   📐 SDR SIMILARITY TEST: Skipped. (Pass --expected to compare query SDR against a target answer)\n")
 	}
 
 	fmt.Println()

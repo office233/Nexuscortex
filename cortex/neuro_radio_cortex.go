@@ -2,6 +2,8 @@ package cortex
 
 import (
 	"math/rand"
+	"sort"
+	"sync"
 )
 
 // Training threshold constants for NeuroRadioCortex.TrainStep.
@@ -96,7 +98,7 @@ type OutputNeuronDecoder struct {
 func NewOutputNeuronDecoder(codec *SemanticFreqCodec, vocabSize int) *OutputNeuronDecoder {
 	d := &OutputNeuronDecoder{
 		Neurons:   make([]OutputNeuron, 0, vocabSize),
-		threshold: 5,
+		threshold: 0, // Will be set by caller (e.g. nrc.DecodeActiveThreshold)
 	}
 
 	for tokenID := 0; tokenID < vocabSize; tokenID++ {
@@ -176,14 +178,13 @@ func (d *OutputNeuronDecoder) DecodeTopK(bus *RadioBus, k int) []TokenScore {
 	for tid, s := range scores {
 		all = append(all, TokenScore{tid, s})
 	}
-	// Sort descending
-	for i := 0; i < len(all); i++ {
-		for j := i + 1; j < len(all); j++ {
-			if all[j].Score > all[i].Score {
-				all[i], all[j] = all[j], all[i]
-			}
+	// Sort descending by score, then by TokenID ascending for determinism.
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Score != all[j].Score {
+			return all[i].Score > all[j].Score
 		}
-	}
+		return all[i].TokenID < all[j].TokenID
+	})
 	if len(all) > k {
 		all = all[:k]
 	}
@@ -211,17 +212,16 @@ type NeuroRadioCortex struct {
 	// Stats tracking
 	LastActiveTiles int // How many tiles activated last tick
 	LastTotalTiles  int // Total alive tiles
+
+	mu sync.Mutex // protects all mutable state from concurrent access
 }
 
 // NewNeuroRadioCortex creates a new cortex with the given number of tiles.
 func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 	// Use default config values; callers should override these from Config.
 	initAmpMin := 100
-	initAmpRange := 156
+	initAmpRange := 155
 	inhibitoryDiv := 5
-	if inhibitoryDiv <= 0 {
-		inhibitoryDiv = 5
-	}
 
 	tiles := make([]NeuroRadioTile, size)
 
@@ -261,6 +261,13 @@ func NewNeuroRadioCortex(size int, rng *rand.Rand) *NeuroRadioCortex {
 	nrc.Decoder.threshold = nrc.DecodeActiveThreshold
 
 	return nrc
+}
+
+// RebuildDecoder rebuilds the OutputNeuronDecoder with the latest codec vocabulary size.
+func (nrc *NeuroRadioCortex) RebuildDecoder() {
+	nTok, _, _ := nrc.Codec.Stats()
+	nrc.Decoder = NewOutputNeuronDecoder(nrc.Codec, nTok)
+	nrc.Decoder.threshold = nrc.DecodeActiveThreshold
 }
 
 // Step runs one tick of the cortex.
@@ -322,18 +329,26 @@ func (nrc *NeuroRadioCortex) Step() {
 	nrc.LastActiveTiles = activeTiles
 }
 
-// InjectTokens puts token frequencies onto the bus.
+// InjectTokens puts token frequencies onto the bus with clamping to prevent uint8 overflow.
 func (nrc *NeuroRadioCortex) InjectTokens(tokenIDs []int, amplitude int16) {
+	amp := amplitude
+	if amp < 0 {
+		amp = 0
+	} else if amp > 255 {
+		amp = 255
+	}
 	for _, tid := range tokenIDs {
 		freqs := nrc.Codec.Encode(tid)
 		for _, f := range freqs {
-			nrc.Bus.Emit(f, uint8(amplitude), 128, false)
+			nrc.Bus.Emit(f, uint8(amp), 128, false)
 		}
 	}
 }
 
 // ProcessInput does a full input→output cycle.
 func (nrc *NeuroRadioCortex) ProcessInput(tokenIDs []int, ticks int) (int, int64) {
+	nrc.mu.Lock()
+	defer nrc.mu.Unlock()
 	nrc.Bus.Clear()
 	nrc.InjectTokens(tokenIDs, int16(nrc.InjectAmplitude))
 
@@ -349,6 +364,8 @@ func (nrc *NeuroRadioCortex) ProcessInput(tokenIDs []int, ticks int) (int, int64
 
 // TrainStep does one train iteration: input→forward→compare→Hebbian.
 func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, ticks int) int {
+	nrc.mu.Lock()
+	defer nrc.mu.Unlock()
 	nrc.Bus.Clear()
 	nrc.InjectTokens(inputTokenIDs, int16(nrc.InjectAmplitude))
 
@@ -381,10 +398,10 @@ func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, t
 
 		isRelevant := targetSet[ef] || targetSet[lf]
 
-		if isRelevant && amp > 0 {
+		if isRelevant {
 			tile.Confirm()
 			matches++
-		} else if !isRelevant && amp < nrcTrainContradictThreshold {
+		} else if amp < nrcTrainContradictThreshold {
 			tile.Contradict()
 
 			// Drift weak tiles toward target frequencies
@@ -400,6 +417,8 @@ func (nrc *NeuroRadioCortex) TrainStep(inputTokenIDs []int, targetTokenID int, t
 
 // Neurogenesis replaces dead tiles with fresh ones.
 func (nrc *NeuroRadioCortex) Neurogenesis() int {
+	nrc.mu.Lock()
+	defer nrc.mu.Unlock()
 	if nrc.InhibitoryRatioDiv <= 0 {
 		nrc.InhibitoryRatioDiv = 5
 	}
@@ -424,7 +443,7 @@ func (nrc *NeuroRadioCortex) Neurogenesis() int {
 	return replaced
 }
 
-// Stats returns cortex statistics.
+// NeuroRadioStats holds aggregate statistics about the NeuroRadioCortex state.
 type NeuroRadioStats struct {
 	TotalTiles   int
 	AliveTiles   int
@@ -433,7 +452,10 @@ type NeuroRadioStats struct {
 	TickCount    uint64
 }
 
+// Stats returns aggregate statistics about the cortex state.
 func (nrc *NeuroRadioCortex) Stats() NeuroRadioStats {
+	nrc.mu.Lock()
+	defer nrc.mu.Unlock()
 	alive := 0
 	var totalAmp int64
 	for i := range nrc.Tiles {

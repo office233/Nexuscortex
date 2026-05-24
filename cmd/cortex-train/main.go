@@ -18,6 +18,7 @@ func main() {
 	fresh := flag.Bool("fresh", false, "Start with a new organism (overwrite existing saved state)")
 	useCurriculum := flag.Bool("curriculum", true, "Sort training items from simple to complex")
 	useRevisit := flag.Bool("revisit", true, "Enable dynamic surprise-based spaced repetition")
+	revisitThreshold := flag.Int("revisit-threshold", 50, "Prediction error threshold for dynamic surprise spaced repetition")
 	seed := flag.Int64("seed", 42, "Seed for deterministic random processes")
 	flag.Parse()
 
@@ -134,9 +135,9 @@ func main() {
 		// 5. Spaced Repetition (Dynamic Surprise Revisit Pass)
 		if *useRevisit {
 			// Threshold is set to 50 prediction error (meaning anything surprising is trained again)
-			revisitItems := curr.GenerateRevisitBatch(errorsMap, 50)
+			revisitItems := curr.GenerateRevisitBatch(errorsMap, uint8(*revisitThreshold))
 			if len(revisitItems) > 0 {
-				fmt.Printf("🔄 Spaced Repetition: Re-evaluating %d items that triggered high surprise (error >= 50)...\n", len(revisitItems))
+				fmt.Printf("🔄 Spaced Repetition: Re-evaluating %d items that triggered high surprise (error >= %d)...\n", len(revisitItems), *revisitThreshold)
 				var revisitTokens int
 				revisitStartTime := time.Now()
 

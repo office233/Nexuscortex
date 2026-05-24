@@ -2,6 +2,7 @@ package cortex
 
 import (
 	"hash/fnv"
+	"sync"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -38,10 +39,11 @@ type CachedResponse struct {
 
 // Cerebellum is a hash-addressed forward-model cache for SDR patterns.
 type Cerebellum struct {
-	Cache     map[uint64]CachedResponse
-	HitCount  uint64
-	MissCount uint64
-	MaxSize   int // Maximum cache entries (0 = unlimited)
+	Cache     map[uint64]CachedResponse // Hash → cached cortical computation
+	HitCount  uint64                    // Number of successful cache lookups
+	MissCount uint64                    // Number of cache misses
+	MaxSize   int                       // Maximum cache entries (0 = unlimited)
+	mu        sync.RWMutex              // protects Cache, HitCount, MissCount
 }
 
 // NewCerebellum creates an empty cerebellum cache with capacity from Config.
@@ -83,6 +85,8 @@ func (c *Cerebellum) HashSDR(sdr SDR) uint64 {
 // CachedResponse and false on miss.
 func (c *Cerebellum) Lookup(input SDR) (CachedResponse, bool) {
 	key := c.HashSDR(input)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	entry, ok := c.Cache[key]
 	if !ok {
 		c.MissCount++
@@ -108,6 +112,8 @@ func (c *Cerebellum) Lookup(input SDR) (CachedResponse, bool) {
 // more reliable forward models.
 func (c *Cerebellum) Learn(input SDR, output SDR, text string, confidence uint8) {
 	key := c.HashSDR(input)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Keep the higher-confidence entry.
 	if existing, ok := c.Cache[key]; ok {
@@ -124,6 +130,8 @@ func (c *Cerebellum) Learn(input SDR, output SDR, text string, confidence uint8)
 	}
 
 	// Auto-evict if over capacity: remove lowest UseCount entry.
+	// O(n) scan over the cache. Acceptable at default MaxSize (10K entries).
+	// For larger caches (>100K), consider a min-heap on UseCount.
 	if c.MaxSize > 0 && len(c.Cache) > c.MaxSize {
 		var evictKey uint64
 		var evictUse uint32 = ^uint32(0) // max uint32
@@ -144,6 +152,8 @@ func (c *Cerebellum) Learn(input SDR, output SDR, text string, confidence uint8)
 // Stats returns the cumulative hit count, miss count, and current
 // number of entries in the cache.
 func (c *Cerebellum) Stats() (hits, misses uint64, cacheSize int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.HitCount, c.MissCount, len(c.Cache)
 }
 
@@ -158,6 +168,8 @@ func (c *Cerebellum) Stats() (hits, misses uint64, cacheSize int) {
 // that are rarely activated are eliminated to free resources for
 // more frequently needed predictions.
 func (c *Cerebellum) Prune(minUseCount uint32) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	removed := 0
 	for key, entry := range c.Cache {
 		if entry.UseCount < minUseCount {
@@ -170,6 +182,8 @@ func (c *Cerebellum) Prune(minUseCount uint32) int {
 
 // EvictByResponse removes cache entries matching the specified response text.
 func (c *Cerebellum) EvictByResponse(text string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	removed := 0
 	for key, entry := range c.Cache {
 		if entry.Text == text {

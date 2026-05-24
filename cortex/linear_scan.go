@@ -547,6 +547,7 @@ func (u *UltraDeepStack) processLayerSparse(input SDR, layerIdx int) SDR {
 	// 1. Feature extraction: up-project through shared ternary layer (SPARSE)
 	upAct, err := u.FeatureUp.ForwardSparse(activeIdx, values)
 	if err != nil {
+		fmt.Printf("[UltraDeepStack] ForwardSparse FeatureUp error: %v\n", err)
 		upAct = make([]int16, u.HiddenDim)
 	}
 
@@ -565,6 +566,7 @@ func (u *UltraDeepStack) processLayerSparse(input SDR, layerIdx int) SDR {
 	if len(upIndices) > 0 {
 		downAct, err = u.FeatureDown.ForwardSparse(upIndices, upValues)
 		if err != nil {
+			fmt.Printf("[UltraDeepStack] ForwardSparse FeatureDown error: %v\n", err)
 			downAct = make([]int16, u.Dim)
 		}
 	} else {

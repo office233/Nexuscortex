@@ -1,5 +1,7 @@
 package cortex
 
+import "sync"
+
 // ─────────────────────────────────────────────────────────────────────
 // working_memory.go — Short-Term Working Memory (Cognitive Scratchpad)
 // ─────────────────────────────────────────────────────────────────────
@@ -24,6 +26,34 @@ package cortex
 // Integer-only, zero-gradient, biologically plausible.
 // ─────────────────────────────────────────────────────────────────────
 
+// Working memory thresholds as named constants.
+//
+// These are internal architecture constants that govern working memory
+// behavior. Unlike Capacity, DecayRate, and MinRelevance (which are in
+// Config), these thresholds are tightly coupled to the WM algorithms
+// and are not intended to be user-tunable.
+const (
+	// wmRefreshSimilarity is the minimum similarity for an incoming pattern
+	// to refresh an existing slot instead of creating a duplicate.
+	wmRefreshSimilarity uint8 = 200
+
+	// wmRecallMinSimilarity is the minimum similarity for a recall to be
+	// considered a match (below this, Recall returns "", 0).
+	wmRecallMinSimilarity uint8 = 50
+
+	// wmRecallRelevanceBoost is the relevance boost applied when a slot
+	// is successfully recalled (retrieval strengthens memory).
+	wmRecallRelevanceBoost uint8 = 10
+
+	// wmRecallRelevanceCap is the maximum relevance value before applying
+	// the boost (to prevent uint8 overflow: cap + boost <= 255).
+	wmRecallRelevanceCap uint8 = 245
+
+	// wmBlendMinRelevance is the minimum relevance a slot must have to be
+	// included in the blended context SDR.
+	wmBlendMinRelevance uint8 = 30
+)
+
 // WMSlot represents a single working memory slot.
 type WMSlot struct {
 	Pattern   SDR    // Neural activation pattern
@@ -35,6 +65,7 @@ type WMSlot struct {
 
 // WorkingMemory is a fixed-capacity short-term memory buffer.
 type WorkingMemory struct {
+	mu            sync.RWMutex
 	Slots         []WMSlot
 	Capacity      int   // Max number of slots (from Config)
 	DecayRate     uint8 // How fast relevance decays per tick
@@ -90,13 +121,16 @@ func NewWorkingMemory(cfg Config) *WorkingMemory {
 // slot is REFRESHED instead of creating a duplicate: its relevance is
 // boosted and age is reset.
 func (wm *WorkingMemory) Store(pattern SDR, text string, relevance uint8) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
 	if pattern.ActiveCount == 0 {
 		return // Don't store empty patterns
 	}
 
 	// Check for existing similar pattern → refresh instead of duplicate.
 	for i := range wm.Slots {
-		if wm.Slots[i].Active && wm.Slots[i].Pattern.Similarity(pattern) > 200 {
+		if wm.Slots[i].Active && wm.Slots[i].Pattern.Similarity(pattern) > wmRefreshSimilarity {
 			// Refresh: boost relevance, reset age, update text.
 			newRel := uint16(wm.Slots[i].Relevance) + uint16(relevance)/2
 			if newRel > 255 {
@@ -165,6 +199,9 @@ func (wm *WorkingMemory) evictionScore(idx int) int {
 // Returns ("", 0) if no active slots exist or no match exceeds
 // the minimum threshold (similarity > 50).
 func (wm *WorkingMemory) Recall(query SDR) (string, uint8) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
 	if query.ActiveCount == 0 {
 		return "", 0
 	}
@@ -183,13 +220,13 @@ func (wm *WorkingMemory) Recall(query SDR) (string, uint8) {
 		}
 	}
 
-	if bestIdx < 0 || bestSim < 50 {
+	if bestIdx < 0 || bestSim < wmRecallMinSimilarity {
 		return "", 0
 	}
 
 	// Boost relevance of recalled slot (retrieval strengthens memory).
-	if wm.Slots[bestIdx].Relevance < 245 {
-		wm.Slots[bestIdx].Relevance += 10
+	if wm.Slots[bestIdx].Relevance < wmRecallRelevanceCap {
+		wm.Slots[bestIdx].Relevance += wmRecallRelevanceBoost
 	} else {
 		wm.Slots[bestIdx].Relevance = 255
 	}
@@ -205,6 +242,9 @@ func (wm *WorkingMemory) Recall(query SDR) (string, uint8) {
 // Tick ages all active slots and decays their relevance.
 // Slots that drop below MinRelevance are automatically cleared.
 func (wm *WorkingMemory) Tick() {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
 	for i := range wm.Slots {
 		if !wm.Slots[i].Active {
 			continue
@@ -238,6 +278,9 @@ func (wm *WorkingMemory) Tick() {
 // everything currently in working memory — ideal for feeding into
 // the Prefrontal reasoning network as background context.
 func (wm *WorkingMemory) BlendContext(sdrSize int) SDR {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+
 	context := NewSDR(sdrSize)
 
 	for i := range wm.Slots {
@@ -245,7 +288,7 @@ func (wm *WorkingMemory) BlendContext(sdrSize int) SDR {
 			continue
 		}
 		// Only blend slots with meaningful relevance.
-		if wm.Slots[i].Relevance > 30 {
+		if wm.Slots[i].Relevance > wmBlendMinRelevance {
 			context = context.Union(wm.Slots[i].Pattern)
 		}
 	}
@@ -261,6 +304,9 @@ func (wm *WorkingMemory) BlendContext(sdrSize int) SDR {
 // by relevance (highest first). Useful for debugging and for the
 // Broca module to incorporate recent context into generation.
 func (wm *WorkingMemory) ActiveTexts() []string {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+
 	type ranked struct {
 		text string
 		rel  uint8
@@ -273,7 +319,9 @@ func (wm *WorkingMemory) ActiveTexts() []string {
 		}
 	}
 
-	// Simple insertion sort (max 8 items).
+	// Insertion sort: O(n²) but optimal for n ≤ 8 (working memory capacity).
+	// stdlib sort.Slice has overhead from interface calls that exceeds
+	// the benefit at these small sizes.
 	for i := 1; i < len(items); i++ {
 		for j := i; j > 0 && items[j].rel > items[j-1].rel; j-- {
 			items[j], items[j-1] = items[j-1], items[j]
@@ -289,6 +337,9 @@ func (wm *WorkingMemory) ActiveTexts() []string {
 
 // ActiveCount returns the number of occupied slots.
 func (wm *WorkingMemory) ActiveCount() int {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+
 	count := 0
 	for i := range wm.Slots {
 		if wm.Slots[i].Active {
@@ -300,6 +351,9 @@ func (wm *WorkingMemory) ActiveCount() int {
 
 // Clear resets all slots to empty.
 func (wm *WorkingMemory) Clear() {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
 	for i := range wm.Slots {
 		wm.Slots[i] = WMSlot{}
 	}
@@ -307,6 +361,9 @@ func (wm *WorkingMemory) Clear() {
 
 // Stats returns metrics about working memory state.
 func (wm *WorkingMemory) Stats() WorkingMemoryStats {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+
 	active := 0
 	var sumRel uint16
 	var maxAge uint16

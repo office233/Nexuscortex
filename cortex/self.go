@@ -177,9 +177,21 @@ func (s *SelfModel) Save(path string) error {
 		return fmt.Errorf("self save marshal: %w", err)
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, raw, 0600); err != nil {
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("self save create tmp: %w", err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("self save write: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("self save sync: %w", err)
+	}
+	f.Close()
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("self save rename: %w", err)
 	}

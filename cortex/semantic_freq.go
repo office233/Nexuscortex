@@ -1,7 +1,6 @@
 package cortex
 
 import (
-	"math"
 	"sort"
 )
 
@@ -56,6 +55,9 @@ func NewSemanticFreqCodec() *SemanticFreqCodec {
 
 // ObserveCooccurrence records that tokens appeared together in context.
 // Call this during training to build the co-occurrence matrix.
+// Complexity: O(n²) where n = len(tokenIDs). This is inherent to pairwise
+// co-occurrence recording and is acceptable because it runs during training,
+// not inference.
 func (s *SemanticFreqCodec) ObserveCooccurrence(tokenIDs []int) {
 	for i, a := range tokenIDs {
 		if s.cooccurrence[a] == nil {
@@ -86,19 +88,32 @@ func (s *SemanticFreqCodec) AssignFrequencies() {
 		return
 	}
 
+	// Pre-compute total co-occurrence count per token to avoid O(n²)
+	// recomputation inside the sort comparator.
+	sumMap := make(map[int]int, len(tokens))
+	for _, t := range tokens {
+		sum := 0
+		for _, v := range s.cooccurrence[t] {
+			sum += v
+		}
+		sumMap[t] = sum
+	}
+
 	// Sort by total co-occurrence count (most connected first)
 	sort.Slice(tokens, func(i, j int) bool {
-		sumI, sumJ := 0, 0
-		for _, v := range s.cooccurrence[tokens[i]] {
-			sumI += v
+		if sumMap[tokens[i]] != sumMap[tokens[j]] {
+			return sumMap[tokens[i]] > sumMap[tokens[j]]
 		}
-		for _, v := range s.cooccurrence[tokens[j]] {
-			sumJ += v
-		}
-		return sumI > sumJ
+		return tokens[i] < tokens[j] // Deterministic tie-breaker
 	})
 
-	// Order tokens by similarity chain (greedy nearest-neighbor)
+	// Order tokens by similarity chain (greedy nearest-neighbor).
+	// Complexity: O(V²) where V = vocabulary size. This is acceptable because:
+	//   - V is typically < 50K tokens
+	//   - This only runs when the dirty flag is set (after ObserveCooccurrence),
+	//     not on every inference call
+	//   - A more complex algorithm (e.g. TSP solver) is not worth the code
+	//     complexity for this use case
 	ordered := make([]int, 0, len(tokens))
 	used := make(map[int]bool)
 
@@ -143,8 +158,8 @@ func (s *SemanticFreqCodec) AssignFrequencies() {
 	s.freqToTokens = make(map[uint8][]int)
 
 	for i, tokenID := range ordered {
-		// Map index to frequency: spread across 0-255
-		freq := uint8(float64(i) * 255.0 / math.Max(1, float64(len(ordered)-1)))
+		// Map index to frequency: spread across 0-255 using clean integer math
+		freq := uint8(i * 255 / max(1, len(ordered)-1))
 
 		s.tokenFreqs[tokenID] = freq
 

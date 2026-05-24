@@ -33,6 +33,11 @@ type TransformerConfig struct {
 // DefaultEOSTokenID is the default end-of-sequence token ID.
 const DefaultEOSTokenID = 3
 
+// perturbLearningRateScale controls the perturbation magnitude relative to
+// the learning rate in updateBlockWeights. Smaller values produce more
+// conservative weight updates.
+const perturbLearningRateScale float32 = 0.01
+
 // DefaultTransformerConfig returns a small but functional config (~13M params).
 // Delegates to TransformerConfigFromConfig using DefaultConfig() to avoid
 // duplicated hardcoded values.
@@ -50,7 +55,7 @@ func TransformerConfigFromConfig(vocabSize int, cfg Config) TransformerConfig {
 		NumLayers:  cfg.TransformerNumLayers,
 		FFNDim:     cfg.TransformerFFNDim,
 		MaxSeqLen:  cfg.TransformerMaxSeqLen,
-		EOSTokenID: DefaultEOSTokenID,
+		EOSTokenID: cfg.TransformerEOSTokenID,
 	}
 }
 
@@ -417,13 +422,10 @@ func (m *MiniTransformer) Forward(tokenIDs []int) *Tensor {
 
 	// 4. LM Head: project to vocabulary
 	// With weight tying: logits = x × TokenEmb^T
-	var logits *Tensor
-	if m.UseTiedWeights {
-		logits = x.MatMulTransposed(m.Embedding.TokenEmb)
-	} else {
-		// Would need a separate LMHead weight matrix
-		logits = x.MatMulTransposed(m.Embedding.TokenEmb)
-	}
+	// Tied weights: reuse token embeddings as the LM head.
+	// UseTiedWeights is always true; a separate LMHead matrix
+	// would be needed here if untied weights are ever supported.
+	logits := x.MatMulTransposed(m.Embedding.TokenEmb)
 
 	return logits
 }
@@ -514,7 +516,7 @@ func updateBlockWeights(block *TransformerBlock, lr float32, rng *rand.Rand) {
 	// For Phase 3, this simplified update gets the model training.
 	// Phase 4 will add proper backprop if needed for convergence.
 
-	perturbScale := lr * 0.01
+	perturbScale := lr * perturbLearningRateScale
 
 	perturbTensor := func(t *Tensor) {
 		for i := range t.Data {
@@ -575,9 +577,6 @@ func (m *MiniTransformer) Generate(prompt []int, maxNewTokens int, temperature f
 
 		// Stop at EOS
 		eosID := m.Config.EOSTokenID
-		if eosID == 0 {
-			eosID = DefaultEOSTokenID
-		}
 		if nextToken == eosID {
 			break
 		}

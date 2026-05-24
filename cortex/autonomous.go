@@ -84,11 +84,16 @@ func NewAutonomousLearner(org *Organism) *AutonomousLearner {
 		langs = []string{"en"}
 	}
 
+	maxGapsTotal := cfg.AutoMaxGaps
+	if maxGapsTotal <= 0 {
+		maxGapsTotal = 1000
+	}
+
 	return &AutonomousLearner{
 		Organism:         org,
 		Web:              NewWebLearnerFromConfig(cfg),
 		Evaluator:        NewSelfEvaluator(),
-		MaxGaps:          1000,
+		MaxGaps:          maxGapsTotal,
 		LearnInterval:    interval,
 		MaxGapsPerCycle:  maxGaps,
 		SearchLangs:      langs,

@@ -1,5 +1,7 @@
 package cortex
 
+import "strings"
+
 // radio_generate.go — Autoregressive text generation through frequency resonance.
 //
 // RadioGenerate produces text token-by-token using the RadioCortex:
@@ -29,7 +31,13 @@ func (rc *RadioCortex) RadioTrainStep(codec *SignalCodec, inputTokenIDs []int, t
 	}
 
 	// Inject input tokens onto bus
-	codec.EncodeTokens(&rc.Bus, inputTokenIDs, uint8(rc.TrainAmplitude))
+	amp := rc.TrainAmplitude
+	if amp < 0 {
+		amp = 0
+	} else if amp > 255 {
+		amp = 255
+	}
+	codec.EncodeTokens(&rc.Bus, inputTokenIDs, uint8(amp))
 
 	// Activate input neurons that match
 	for i := rc.InputStart; i < rc.InputEnd; i++ {
@@ -37,13 +45,16 @@ func (rc *RadioCortex) RadioTrainStep(codec *SignalCodec, inputTokenIDs []int, t
 		signal, busPhase := rc.Bus.Read(n.FreqListen())
 		if signal > 0 {
 			resonance := Resonance(n.Phase(), busPhase)
-			if resonance > int8(rc.ResonanceThreshold) {
+			thresh := rc.ResonanceThreshold
+			if thresh > 127 { thresh = 127 }
+			if thresh < -128 { thresh = -128 }
+			if resonance > int8(thresh) {
 				rc.Fired[i] = true
 			}
 		}
 	}
 
-	// Run ticks — GPU-accelerated if available, else CPU fallback
+	// GPU/CPU dispatch — duplicated in RadioGenerate (keep in sync).
 	if rc.GPU != nil && rc.GPU.IsAvailable() {
 		// Upload current bus state to GPU, run all ticks, download result
 		rc.SyncToGPU()
@@ -71,7 +82,9 @@ func (rc *RadioCortex) RadioTrainStep(codec *SignalCodec, inputTokenIDs []int, t
 		return 0
 	}
 
-	// Check which output neurons fired
+	// outputFired tracks whether any output neuron fired this step.
+	// Used below to choose between targeted Hebbian learning (some output)
+	// vs. blanket Contradict (no output at all).
 	outputFired := false
 	for i := rc.OutputStart; i < rc.OutputEnd; i++ {
 		if rc.Fired[i] {
@@ -178,7 +191,13 @@ func (rc *RadioCortex) RadioGenerate(codec *SignalCodec, vocab *Vocab, contextTo
 		if len(window) > windowSize {
 			window = window[len(window)-windowSize:]
 		}
-		codec.EncodeTokens(&rc.Bus, window, uint8(rc.TrainAmplitude))
+		amp := rc.TrainAmplitude
+		if amp < 0 {
+			amp = 0
+		} else if amp > 255 {
+			amp = 255
+		}
+		codec.EncodeTokens(&rc.Bus, window, uint8(amp))
 
 		// Activate matching input neurons
 		for i := rc.InputStart; i < rc.InputEnd; i++ {
@@ -186,13 +205,16 @@ func (rc *RadioCortex) RadioGenerate(codec *SignalCodec, vocab *Vocab, contextTo
 			signal, busPhase := rc.Bus.Read(n.FreqListen())
 			if signal > 0 {
 				resonance := Resonance(n.Phase(), busPhase)
-				if resonance > int8(rc.ResonanceThreshold) {
+				thresh := rc.ResonanceThreshold
+				if thresh > 127 { thresh = 127 }
+				if thresh < -128 { thresh = -128 }
+				if resonance > int8(thresh) {
 					rc.Fired[i] = true
 				}
 			}
 		}
 
-		// Run ticks — GPU-accelerated if available
+		// GPU/CPU dispatch — duplicated in RadioTrainStep (keep in sync).
 		if rc.GPU != nil && rc.GPU.IsAvailable() {
 			rc.SyncToGPU()
 			var busArr [256]int32
@@ -244,18 +266,14 @@ func (rc *RadioCortex) RadioGenerate(codec *SignalCodec, vocab *Vocab, contextTo
 	// Convert token IDs to text
 	var words []string
 	for _, tid := range generated {
+		if tid < 0 {
+			continue
+		}
 		word := vocab.Decode(uint32(tid))
 		if word != "" {
 			words = append(words, word)
 		}
 	}
 
-	result := ""
-	for i, w := range words {
-		if i > 0 {
-			result += " "
-		}
-		result += w
-	}
-	return result
+	return strings.Join(words, " ")
 }

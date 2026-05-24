@@ -48,6 +48,8 @@ func main() {
 	fresh := flag.Bool("fresh", false, "Start with a new organism (ignore saved state)")
 	evalPath := flag.String("eval", "", "Path to a comprehensive JSONL eval file")
 	legacy := flag.Bool("legacy", false, "Run legacy 3-suite eval (basic_recall, no_echo, generalization)")
+	fullThresh := flag.Float64("full-threshold", 0.80, "Word overlap threshold for a FULL match (0.0 to 1.0)")
+	partialThresh := flag.Float64("partial-threshold", 0.50, "Word overlap threshold for a PARTIAL match (0.0 to 1.0)")
 	flag.Parse()
 
 	cfg := cortex.DefaultConfig()
@@ -85,10 +87,10 @@ func main() {
 	fmt.Println("  Word overlap evaluation is a lexical proximity metric (Jaccard-like overlap of keywords).")
 	fmt.Println("  It serves as a fast diagnostic tool for semantic recall and cognitive association, but")
 	fmt.Println("  does not assess linguistic fluency, syntactic correctness, or grammatical coherence.")
-	fmt.Println("  Full evaluation scoring (FULL >= 80%, PARTIAL >= 50%) is strict and aims to limit false positives.")
+	fmt.Printf("  Full evaluation scoring (FULL >= %.0f%%, PARTIAL >= %.0f%%) is strict and aims to limit false positives.\n", *fullThresh*100, *partialThresh*100)
 	fmt.Println()
 
-	results := runComprehensive(cases, newOrganism)
+	results := runComprehensive(cases, newOrganism, *fullThresh, *partialThresh)
 	printComprehensiveReport(results)
 }
 
@@ -127,21 +129,21 @@ func loadComprehensiveSuite(path string) ([]ComprehensiveCase, error) {
 	return cases, nil
 }
 
-func runComprehensive(cases []ComprehensiveCase, newOrg func() *cortex.Organism) []CaseResult {
+func runComprehensive(cases []ComprehensiveCase, newOrg func() *cortex.Organism, fullThresh, partialThresh float64) []CaseResult {
 	results := make([]CaseResult, 0, len(cases))
 	for i, cc := range cases {
 		org := newOrg()
 		response := org.Process(cc.Input)
 		conf := org.Prefrontal.GetConfidence()
-		if response == "(no confident response)" {
+		if response == cortex.NoConfidentResponse {
 			conf = 0
 		}
 
 		overlap := wordOverlap(response, cc.Expected)
 		score := "FAIL"
-		if overlap >= 0.80 {
+		if overlap >= fullThresh {
 			score = "FULL"
-		} else if overlap >= 0.50 {
+		} else if overlap >= partialThresh {
 			score = "PARTIAL"
 		}
 

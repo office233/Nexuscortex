@@ -90,7 +90,8 @@ func (d *Decoder) DecodeTopK(pattern []bool, sdrSize int, k int) []DecodedWord {
 	}
 
 	// Compare against every known word SDR.
-	candidates := make([]DecodedWord, 0, len(d.encoder.wordSDRs))
+	d.encoder.mu.RLock()
+	candidates := make([]DecodedWord, 0, 128)
 	for wordID, wordSDR := range d.encoder.wordSDRs {
 		sim := observed.Similarity(wordSDR)
 		if sim > 0 {
@@ -101,6 +102,7 @@ func (d *Decoder) DecodeTopK(pattern []bool, sdrSize int, k int) []DecodedWord {
 			})
 		}
 	}
+	d.encoder.mu.RUnlock()
 
 	if len(candidates) == 0 {
 		return nil

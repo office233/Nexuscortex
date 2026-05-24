@@ -1,5 +1,7 @@
 package cortex
 
+import "sort"
+
 // SignalCodec maps tokens to frequency "chords" and back.
 //
 // Each token is represented by a set of 13 frequencies (out of 256),
@@ -28,6 +30,8 @@ type SignalCodec struct {
 // NewSignalCodec creates a codec with default 13 frequencies per token.
 // 13/256 ≈ 5% density — sparse enough to distinguish tokens,
 // dense enough for overlap between related concepts.
+// These defaults match Config.SignalCodecFreqsPerTk (13) and
+// Config.SignalCodecMaxFreqs (64). Use NewSignalCodecCustom to override.
 func NewSignalCodec(vocabSize int) *SignalCodec {
 	return NewSignalCodecCustom(vocabSize, 13, 64)
 }
@@ -61,11 +65,19 @@ func (sc *SignalCodec) buildSpectrum() {
 		seen := make(map[uint8]bool, sc.freqsPerTok)
 		freqs := make([]uint8, 0, sc.freqsPerTok)
 
-		// FNV-inspired mixing: deterministic, good distribution
-		seed := uint32(tokenID)*2654435761 + 0x9E3779B9
+		// Named hash constants — well-known values from FNV/LCG literature.
+		// fibonacci32 is the golden ratio constant used for hash distribution.
+		// lcgMul/lcgInc are the Numerical Recipes linear congruential generator.
+		const (
+			fibonacci32 uint32 = 2654435761
+			goldenMix   uint32 = 0x9E3779B9
+			lcgMul      uint32 = 1664525
+			lcgInc      uint32 = 1013904223
+		)
+		seed := uint32(tokenID)*fibonacci32 + goldenMix
 
 		for len(freqs) < sc.freqsPerTok {
-			seed = seed*1664525 + 1013904223 // LCG step
+			seed = seed*lcgMul + lcgInc // LCG step
 			freq := uint8(seed >> 24)        // top 8 bits
 
 			if !seen[freq] {
@@ -136,20 +148,27 @@ func (sc *SignalCodec) EncodeTokens(bus *RadioBus, tokenIDs []int, amplitude uin
 // DecodeToken reads the bus spectrum and returns the token whose
 // frequency chord has the highest total signal energy.
 func (sc *SignalCodec) DecodeToken(bus *RadioBus) (tokenID int, score int64) {
-	spectrum := bus.Spectrum()
+	var activeFreqs []uint8
+	for f := 0; f < 256; f++ {
+		if bus.Signal[f] > 0 {
+			activeFreqs = append(activeFreqs, uint8(f))
+		}
+	}
+	if len(activeFreqs) == 0 {
+		return -1, 0
+	}
+
+	scores := make(map[int]int64)
+	for _, f := range activeFreqs {
+		sig := int64(bus.Signal[f])
+		for _, tid := range sc.freqToTokens[f] {
+			scores[tid] += sig
+		}
+	}
 
 	bestToken := -1
 	var bestScore int64
-
-	for tid := 0; tid < sc.vocabSize; tid++ {
-		freqs := sc.tokenFreqs[tid]
-		var total int64
-		for _, f := range freqs {
-			sig := int64(spectrum[f])
-			if sig > 0 {
-				total += sig
-			}
-		}
+	for tid, total := range scores {
 		if total > bestScore {
 			bestScore = total
 			bestToken = tid
@@ -161,43 +180,41 @@ func (sc *SignalCodec) DecodeToken(bus *RadioBus) (tokenID int, score int64) {
 
 // DecodeTopK returns the top K tokens sorted by spectrum match score.
 func (sc *SignalCodec) DecodeTopK(bus *RadioBus, k int) []TokenScore {
-	spectrum := bus.Spectrum()
+	var activeFreqs []uint8
+	for f := 0; f < 256; f++ {
+		if bus.Signal[f] > 0 {
+			activeFreqs = append(activeFreqs, uint8(f))
+		}
+	}
+	if len(activeFreqs) == 0 {
+		return nil
+	}
 
-	scores := make([]TokenScore, 0, k)
-	for tid := 0; tid < sc.vocabSize; tid++ {
-		freqs := sc.tokenFreqs[tid]
-		var total int64
-		for _, f := range freqs {
-			sig := int64(spectrum[f])
-			if sig > 0 {
-				total += sig
-			}
-		}
-		if total <= 0 {
-			continue
-		}
-
-		// Insert into sorted top-k
-		ts := TokenScore{TokenID: tid, Score: total}
-		inserted := false
-		for i, s := range scores {
-			if total > s.Score {
-				scores = append(scores, TokenScore{})
-				copy(scores[i+1:], scores[i:])
-				scores[i] = ts
-				inserted = true
-				break
-			}
-		}
-		if !inserted && len(scores) < k {
-			scores = append(scores, ts)
-		}
-		if len(scores) > k {
-			scores = scores[:k]
+	scores := make(map[int]int64)
+	for _, f := range activeFreqs {
+		sig := int64(bus.Signal[f])
+		for _, tid := range sc.freqToTokens[f] {
+			scores[tid] += sig
 		}
 	}
 
-	return scores
+	all := make([]TokenScore, 0, len(scores))
+	for tid, total := range scores {
+		all = append(all, TokenScore{TokenID: tid, Score: total})
+	}
+
+	// Sort descending by score, then by TokenID ascending for determinism.
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Score != all[j].Score {
+			return all[i].Score > all[j].Score
+		}
+		return all[i].TokenID < all[j].TokenID
+	})
+
+	if len(all) > k {
+		all = all[:k]
+	}
+	return all
 }
 
 // TokenScore pairs a token ID with its frequency match score.
@@ -248,9 +265,15 @@ func (sc *SignalCodec) GrowVocab(newSize int) {
 		seen := make(map[uint8]bool, sc.freqsPerTok)
 		freqs := make([]uint8, 0, sc.freqsPerTok)
 
-		seed := uint32(tokenID)*2654435761 + 0x9E3779B9
+		const (
+			fibonacci32 uint32 = 2654435761
+			goldenMix   uint32 = 0x9E3779B9
+			lcgMul      uint32 = 1664525
+			lcgInc      uint32 = 1013904223
+		)
+		seed := uint32(tokenID)*fibonacci32 + goldenMix
 		for len(freqs) < sc.freqsPerTok {
-			seed = seed*1664525 + 1013904223
+			seed = seed*lcgMul + lcgInc
 			freq := uint8(seed >> 24)
 			if !seen[freq] {
 				seen[freq] = true
@@ -265,9 +288,3 @@ func (sc *SignalCodec) GrowVocab(newSize int) {
 	}
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

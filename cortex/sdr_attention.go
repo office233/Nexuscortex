@@ -26,22 +26,45 @@ import (
 	"math/bits"
 )
 
+// Attention mechanism constants.
+//
+// These constants are architectural invariants of the SDR attention mechanism.
+// They are NOT user-configurable — changing them requires understanding the
+// mathematical properties of the attention scoring.
+const (
+	// sdrAttentionDefaultSparsity is the default number of active bits
+	// when a query SDR has ActiveCount == 0.
+	sdrAttentionDefaultSparsity = 50
+
+	// sdrAttentionMinWeight is the minimum weight for an attention
+	// value to contribute to the output. Scores below this are too
+	// weak and are skipped.
+	sdrAttentionMinWeight uint8 = 32
+
+	// sdrActivationValue is the int16 activation level assigned to
+	// active bits when converting an SDR to a dense activation vector.
+	sdrActivationValue int16 = 127
+)
+
 // SDRAttentionHead represents a single attention head using SDR operations.
 // It stores a set of key-value pairs and retrieves the best-matching
 // values for a given query using popcount similarity.
 type SDRAttentionHead struct {
 	KeySize   int // Size of key SDRs in bits
 	ValueSize int // Size of value SDRs in bits
-	MaxSlots  int // Maximum number of key-value pairs
+	MaxSlots  int // Maximum number of key-value pairs (ring buffer capacity)
 
 	// Storage: parallel arrays for cache-friendly access
-	Keys   []SDR // [MaxSlots] key SDRs
-	Values []SDR // [MaxSlots] value SDRs
-	Count  int   // Current number of stored pairs
+	Keys   []SDR // [MaxSlots] key SDRs (ring buffer of past keys)
+	Values []SDR // [MaxSlots] value SDRs (ring buffer of past values)
+	Count  int   // Total number of stored pairs (monotonically increasing)
 }
 
 // NewSDRAttentionHead creates a new attention head.
 func NewSDRAttentionHead(keySize, valueSize, maxSlots int) *SDRAttentionHead {
+	if maxSlots <= 0 {
+		maxSlots = 1 // Prevent division by zero in Store()
+	}
 	return &SDRAttentionHead{
 		KeySize:   keySize,
 		ValueSize: valueSize,
@@ -144,6 +167,7 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 
 	// Union top-K values with score-weighted bit selection
 	// Bits that appear in multiple high-scoring values are reinforced
+	// Allocated per call — cannot be cached because Query() may run concurrently.
 	bitCounts := make([]uint8, h.ValueSize)
 	maxScore := topItems[0].score
 	if maxScore == 0 {
@@ -157,7 +181,7 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 		v := h.Values[item.idx]
 		// Weight: how relevant is this value (0-255 scale)
 		weight := uint8((item.score * 255) / maxScore)
-		if weight < 32 {
+		if weight < sdrAttentionMinWeight {
 			continue // Too weak, skip
 		}
 
@@ -176,7 +200,7 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 	// Select the top ActiveCount bits by accumulated weight
 	targetActive := query.ActiveCount
 	if targetActive == 0 {
-		targetActive = 50 // Default SDR sparsity
+		targetActive = sdrAttentionDefaultSparsity // Default SDR sparsity
 	}
 	result = selectTopBits(bitCounts, h.ValueSize, targetActive)
 
@@ -184,6 +208,9 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 }
 
 // selectTopBits creates an SDR by selecting the N bits with highest counts.
+// Complexity: O(maxCount × size) where maxCount is the highest value in counts
+// (capped at 255 for uint8) and size is the SDR size. For typical values
+// (maxCount ≤ 255, size = SDR dimension) this is fast and avoids a full sort.
 func selectTopBits(counts []uint8, size, n int) SDR {
 	if n > size {
 		n = size
@@ -293,7 +320,7 @@ func (m *MultiHeadSDRAttention) ProcessToken(input SDR, topK int) SDR {
 		// Convert activations back to SDRs
 		sparsity := input.ActiveCount
 		if sparsity <= 0 {
-			sparsity = 50 // Default SDR sparsity fallback
+			sparsity = sdrAttentionDefaultSparsity // Default SDR sparsity fallback
 		}
 		querySDR := activationsToSDR(queryAct, sparsity)
 		keySDR := activationsToSDR(keyAct, sparsity)
@@ -320,7 +347,7 @@ func sdrToActivations(sdr SDR) []int16 {
 	out := make([]int16, sdr.Size)
 	for _, bit := range sdr.ActiveIndices() {
 		if bit < sdr.Size {
-			out[bit] = 127
+			out[bit] = sdrActivationValue
 		}
 	}
 	return out

@@ -84,22 +84,32 @@ func (ae *AnalogyEngine) FindAnalogy(a, b, c string) (string, uint8) {
 	ae.Brain.mu.RLock()
 	defer ae.Brain.mu.RUnlock()
 
+	// Extract and sort words to ensure complete determinism in case of early exit
+	words := make([]string, 0, len(ae.Brain.Vocab.WordToID))
+	for w := range ae.Brain.Vocab.WordToID {
+		words = append(words, w)
+	}
+	sort.Strings(words)
+
 	var bestWord string
 	var bestScore uint8
 
 	scanned := 0
-	for word, id := range ae.Brain.Vocab.WordToID {
+	ae.Encoder.mu.RLock()
+	for _, word := range words {
 		if excludeWords[word] {
 			continue
 		}
 
+		id := ae.Brain.Vocab.WordToID[word]
 		wordSDR, ok := ae.Encoder.wordSDRs[id]
 		if !ok {
 			continue
 		}
 
 		score := candidate.Similarity(wordSDR)
-		if score > bestScore {
+		// Deterministic tie-breaker: prefer lexicographically smaller word
+		if score > bestScore || (score == bestScore && score > 0 && bestWord != "" && word < bestWord) {
 			bestScore = score
 			bestWord = word
 		}
@@ -109,6 +119,7 @@ func (ae *AnalogyEngine) FindAnalogy(a, b, c string) (string, uint8) {
 			break
 		}
 	}
+	ae.Encoder.mu.RUnlock()
 
 	return bestWord, bestScore
 }
@@ -136,6 +147,7 @@ func (ae *AnalogyEngine) FindSimilar(word string, topN int) []SimilarWord {
 
 	var results []SimilarWord
 
+	ae.Encoder.mu.RLock()
 	for w, id := range ae.Brain.Vocab.WordToID {
 		if excludeWords[w] {
 			continue
@@ -153,6 +165,7 @@ func (ae *AnalogyEngine) FindSimilar(word string, topN int) []SimilarWord {
 
 		results = append(results, SimilarWord{Word: w, Score: score})
 	}
+	ae.Encoder.mu.RUnlock()
 
 	// Sort by score descending, then by word ascending for stability.
 	sort.Slice(results, func(i, j int) bool {

@@ -60,11 +60,12 @@ func NewPredictor(_ interface{}) *Predictor {
 // so Compare works correctly.
 func (p *Predictor) Predict(currentInput SDR) SDR {
 	// Append to sliding window (ring buffer to avoid backing array leak).
+	cloned := currentInput.Clone()
 	if len(p.Window) >= DefaultPredictorWindowSize {
 		copy(p.Window, p.Window[1:])
-		p.Window[len(p.Window)-1] = currentInput
+		p.Window[len(p.Window)-1] = cloned
 	} else {
-		p.Window = append(p.Window, currentInput)
+		p.Window = append(p.Window, cloned)
 	}
 
 	// Union the last DefaultPredictorUnionDepth entries for temporal prediction.

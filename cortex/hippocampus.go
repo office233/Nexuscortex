@@ -7,6 +7,20 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+)
+
+// Keyword scoring constants for RecallByKeywords / RecallByKeywordsExpanded.
+const (
+	// kwScorePerHit is the score contribution per direct keyword hit.
+	// Set to 130 so a single content-word match exceeds the confidence
+	// threshold of 128 — safe because stop words and stems are filtered.
+	kwScorePerHit = 130
+
+	// kwScorePerSecondaryHit is the score contribution per association-
+	// expanded (secondary) keyword hit in RecallByKeywordsExpanded.
+	// Weighted lower than primary hits so direct matches are preferred.
+	kwScorePerSecondaryHit = 60
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -43,6 +57,7 @@ type Memory struct {
 // Hippocampus is an episodic memory store with capacity limits and
 // consolidation dynamics.
 type Hippocampus struct {
+	mu                    sync.RWMutex
 	Memories              []Memory
 	MaxMemories           int
 	ReconsolidationThresh uint8
@@ -59,6 +74,11 @@ type Hippocampus struct {
 // hippoStopWords contains common function words and punctuation that
 // should be excluded from the keyword index. These carry little
 // discriminative meaning for memory retrieval.
+//
+// Stop words are language-invariant high-frequency function words.
+// They are hardcoded because they are universal linguistic constants,
+// not application-specific configuration. Adding/removing entries
+// here has minimal impact on retrieval quality.
 var hippoStopWords = map[string]bool{
 	"what": true, "is": true, "the": true, "a": true, "an": true,
 	"of": true, "in": true, "to": true, "and": true, "or": true,
@@ -94,6 +114,10 @@ var hippoStopWords = map[string]bool{
 // stemSuffixes lists suffixes to strip, ordered longest-first
 // so we greedily remove the longest applicable suffix. Supports both
 // English and Romanian inflections.
+//
+// Suffixes for a simple Romanian+English stemmer.
+// Hardcoded as they represent stable linguistic morphology rules.
+// A full stemmer (Snowball) would add dependency overhead for marginal gain.
 var stemSuffixes = []string{
 	"isation", "ization",
 	"ation", "tion", "sion",
@@ -116,7 +140,10 @@ func stemWord(word string) string {
 	}
 	// Handle irregular plurals before suffix stripping.
 	if strings.HasSuffix(word, "ies") && len(word) > 4 {
-		return word[:len(word)-3] + "i" // memories → memori
+		stemmed := word[:len(word)-3] + "i" // memories → memori
+		if len(stemmed) >= 2 {
+			return stemmed
+		}
 	}
 	for _, suffix := range stemSuffixes {
 		if strings.HasSuffix(word, suffix) {
@@ -182,6 +209,9 @@ func NewHippocampus(cfg Config) *Hippocampus {
 //
 // The similarity threshold, initial strength, and LTP threshold are dynamic.
 func (h *Hippocampus) Store(input SDR, output SDR, context string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	// Ensure the keyword index map is initialised (may be nil after
 	// deserialisation from an older file format).
 	if h.keywordIndex == nil {
@@ -231,6 +261,9 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 		}
 		// Add new memory's keywords.
 		h.addKeywordsForIndex(weakest, context)
+		// Eviction may leave stale entries in the keyword index;
+		// rebuild to keep it consistent.
+		h.rebuildKeywordIndexLocked()
 		return
 	}
 
@@ -264,6 +297,9 @@ func (h *Hippocampus) Recall(query SDR, threshold uint8) (Memory, bool) {
 // score. Callers that expose confidence should use this score instead of
 // treating any recall above threshold as perfect certainty.
 func (h *Hippocampus) RecallScored(query SDR, threshold uint8) (Memory, uint8, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	var bestSim uint8
 	bestIdx := -1
 
@@ -290,6 +326,9 @@ func (h *Hippocampus) RecallScored(query SDR, threshold uint8) (Memory, uint8, b
 // match. Returns the best memory, a combined score (0-255), and
 // whether a match was found.
 func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query SDR) (Memory, uint8, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	if len(keywords) == 0 || len(h.Memories) == 0 {
 		return Memory{}, 0, false
 	}
@@ -334,10 +373,10 @@ func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query S
 	}
 
 	// Compute a combined score using distinct hit count.
-	// 1 hit → 130, 2 hits → 200+, ensuring even a single content-word
-	// match can pass the confidence threshold (128). This is safe
-	// because stop words are filtered and words are stemmed.
-	kwScore := bestHits * 130
+	// 1 hit → kwScorePerHit, 2 hits → 200+, ensuring even a single
+	// content-word match can pass the confidence threshold (128).
+	// This is safe because stop words are filtered and words are stemmed.
+	kwScore := bestHits * kwScorePerHit
 	if kwScore > 200 {
 		kwScore = 200
 	}
@@ -361,6 +400,9 @@ func (h *Hippocampus) RecallByKeywords(keywords []string, threshold int, query S
 // compared to direct keyword hits, so direct matches are always
 // preferred.
 func (h *Hippocampus) RecallByKeywordsExpanded(keywords []string, threshold int, query SDR, brain *Brain) (Memory, uint8, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	if len(keywords) == 0 || len(h.Memories) == 0 {
 		return Memory{}, 0, false
 	}
@@ -460,7 +502,7 @@ func (h *Hippocampus) RecallByKeywordsExpanded(keywords []string, threshold int,
 			}
 		}
 	}
-	kwScore := primaryHits*130 + secondaryHits*60
+	kwScore := primaryHits*kwScorePerHit + secondaryHits*kwScorePerSecondaryHit
 	if kwScore > 200 {
 		kwScore = 200
 	}
@@ -555,6 +597,14 @@ func (h *Hippocampus) removeKeywordsForIndex(idx int, context string) {
 // memories. Called after loading from disk or after consolidation
 // (which may delete and reorder memories).
 func (h *Hippocampus) RebuildKeywordIndex() {
+	// Note: callers that already hold the lock (e.g. Consolidate) call
+	// rebuildKeywordIndexLocked instead.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rebuildKeywordIndexLocked()
+}
+
+func (h *Hippocampus) rebuildKeywordIndexLocked() {
 	h.keywordIndex = make(map[string][]int, len(h.Memories))
 	for i := range h.Memories {
 		h.addKeywordsForIndex(i, h.Memories[i].Context)
@@ -576,6 +626,9 @@ func (h *Hippocampus) RebuildKeywordIndex() {
 //  4. Decay: all remaining memories lose 1 point of strength, modeling
 //     the natural forgetting curve.
 func (h *Hippocampus) Consolidate() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	// Track which memories were strengthened this cycle to avoid
 	// canceling LTP with decay in the same tick (was net-zero before).
 	strengthened := make([]bool, len(h.Memories))
@@ -612,7 +665,7 @@ func (h *Hippocampus) Consolidate() {
 	}
 
 	// Rebuild the keyword index because pruning changed memory indices.
-	h.RebuildKeywordIndex()
+	h.rebuildKeywordIndexLocked()
 }
 
 // Size returns the number of memories currently stored.
@@ -653,6 +706,9 @@ func (h *Hippocampus) GetAllContexts() []string {
 
 // Save serializes the hippocampus to a binary file at the given path.
 func (h *Hippocampus) Save(path string) error {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	tmpPath := path + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
@@ -718,7 +774,10 @@ func (h *Hippocampus) Save(path string) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("hippocampus sync: %w", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("hippocampus close: %w", err)
+	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("hippocampus rename: %w", err)

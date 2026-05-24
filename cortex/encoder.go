@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ type Encoder struct {
 	// When a new word is encountered, its SDR borrows bits from these.
 	contextWindow []uint32
 	contextMax    int // Maximum context window size
+	mu            sync.RWMutex
 }
 
 // NewEncoder creates a new encoder tied to the given vocabulary.
@@ -63,14 +65,27 @@ func NewEncoder(vocab *Vocab, sdrSize, activeCount int, rng *rand.Rand, cfgs ...
 func (e *Encoder) EncodeWord(word string) SDR {
 	wordID := e.vocab.GetOrCreate(word)
 
-	// Return cached SDR if it already exists.
-	if sdr, ok := e.wordSDRs[wordID]; ok {
+	e.mu.RLock()
+	sdr, ok := e.wordSDRs[wordID]
+	e.mu.RUnlock()
+	if ok {
+		e.mu.Lock()
+		e.pushContext(wordID)
+		e.mu.Unlock()
+		return sdr
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if sdr, ok = e.wordSDRs[wordID]; ok {
 		e.pushContext(wordID)
 		return sdr
 	}
 
 	// Build a new SDR with semantic overlap.
-	sdr := e.buildSemanticSDR(wordID)
+	sdr = e.buildSemanticSDR(wordID)
 	e.wordSDRs[wordID] = sdr
 	e.pushContext(wordID)
 	return sdr
@@ -220,6 +235,9 @@ type sdrRecord struct {
 // Save writes the encoder's learned SDR mappings to a JSON file.
 // Uses atomic temp-file + sync + rename to prevent corruption on crash.
 func (e *Encoder) Save(path string) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	ed := encoderData{
 		SDRSize:     e.sdrSize,
 		ActiveCount: e.activeCount,

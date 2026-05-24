@@ -75,6 +75,10 @@ func (sc *SleepConsolidator) Consolidate(
 		Logs: []string{"Sleep consolidation: starting memory replay..."},
 	}
 
+	if hippo == nil || prefrontal == nil || brain == nil || broca == nil {
+		return report
+	}
+
 	nMem := len(hippo.Memories)
 	if nMem == 0 {
 		report.Logs = append(report.Logs, "Sleep consolidation: no memories to replay.")
@@ -122,7 +126,7 @@ func (sc *SleepConsolidator) Consolidate(
 
 		// Generate a text representation for ReinforceSequence.
 		phrase := broca.Generate(mem.Output.Clone(), cfg.MaxGenWords)
-		if phrase == "" || phrase == "(no confident response)" {
+		if phrase == "" || phrase == NoConfidentResponse {
 			report.Logs = append(report.Logs, fmt.Sprintf(
 				"  Replay #%d: skipped (no decodable phrase, confidence=%d).",
 				report.Replayed, confidence))
@@ -189,14 +193,15 @@ func interleaveMemories(recent, old []Memory, ratio int) []Memory {
 	return playlist
 }
 
-// truncate shortens a string to maxLen characters, appending "…" if
-// truncated.
+// truncate shortens a string to maxLen runes, appending "…" if
+// truncated. Operates on runes to avoid splitting multi-byte characters.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	if maxLen < 1 {
-		return ""
+	if maxLen <= 1 {
+		return "…"
 	}
-	return s[:maxLen-1] + "…"
+	return string(runes[:maxLen-1]) + "…"
 }
