@@ -73,6 +73,16 @@ func newKVCacheLayer(maxSeqLen, embedDim int) *KVCache {
 	}
 }
 
+// ensureRow returns t if it already has shape [1, cols], otherwise
+// allocates a fresh [1, cols] tensor. Used by the cached-path scratch
+// fields whose shapes never change between steps.
+func ensureRow(t *Tensor, cols int) *Tensor {
+	if t != nil && len(t.Shape) == 2 && t.Shape[0] == 1 && t.Shape[1] == cols {
+		return t
+	}
+	return NewTensor(1, cols)
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // MultiHeadAttention — cached single-token step
 // ─────────────────────────────────────────────────────────────────────
@@ -94,24 +104,31 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 	numHeads := mha.NumHeads
 	headDim := mha.HeadDim
 
-	// Project the new token: Q, K_new, V_new each [1, embedDim].
-	// MatMul returns a fresh tensor so the bias add is safe in place.
-	Q := x.MatMul(mha.WQ)
-	Q.AddInPlace(mha.BQ)
-	Knew := x.MatMul(mha.WK)
-	Knew.AddInPlace(mha.BK)
-	Vnew := x.MatMul(mha.WV)
-	Vnew.AddInPlace(mha.BV)
+	// Lazily allocate the per-step scratch tensors. All [1, embedDim].
+	mha.stepQBuf = ensureRow(mha.stepQBuf, embedDim)
+	mha.stepKBuf = ensureRow(mha.stepKBuf, embedDim)
+	mha.stepVBuf = ensureRow(mha.stepVBuf, embedDim)
+	mha.stepAttnBuf = ensureRow(mha.stepAttnBuf, embedDim)
+	mha.stepOutBuf = ensureRow(mha.stepOutBuf, embedDim)
 
-	// Append to cache so future tokens can attend back. The new query
-	// will read from cache.K / cache.V right after.
-	cache.K = appendRow(cache.K, Knew, embedDim)
-	cache.V = appendRow(cache.V, Vnew, embedDim)
+	// Project the new token into the scratch buffers, then add bias in place.
+	x.MatMulInto(mha.stepQBuf, mha.WQ)
+	mha.stepQBuf.AddInPlace(mha.BQ)
+	x.MatMulInto(mha.stepKBuf, mha.WK)
+	mha.stepKBuf.AddInPlace(mha.BK)
+	x.MatMulInto(mha.stepVBuf, mha.WV)
+	mha.stepVBuf.AddInPlace(mha.BV)
+
+	// Append K/V into the cache. appendRow only reads from the row, so
+	// stepKBuf/stepVBuf are free to be reused on the next step.
+	cache.K = appendRow(cache.K, mha.stepKBuf, embedDim)
+	cache.V = appendRow(cache.V, mha.stepVBuf, embedDim)
 
 	seqLen := cache.K.Shape[0]
 	scale := float32(1.0 / math.Sqrt(float64(headDim)))
 
-	attnOut := NewTensor(1, embedDim)
+	attnOut := mha.stepAttnBuf
+	Q := mha.stepQBuf
 
 	// Grow per-head scratch slices if needed. Reused across heads here
 	// and across consecutive cached steps (they hold no state).
@@ -174,10 +191,40 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 		}
 	}
 
-	// Output projection.
-	out := attnOut.MatMul(mha.WO)
-	out.AddInPlace(mha.BO)
-	return out
+	// Output projection into stepOutBuf.
+	attnOut.MatMulInto(mha.stepOutBuf, mha.WO)
+	mha.stepOutBuf.AddInPlace(mha.BO)
+	return mha.stepOutBuf
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// FeedForward — cached single-token step
+// ─────────────────────────────────────────────────────────────────────
+
+// ForwardCachedStep is the inference-only counterpart to Forward for a
+// single [1, embedDim] input. It does NOT populate ff.lastInput /
+// lastHidden / lastAct (which belong to the training path) and uses
+// per-FFN scratch tensors so it allocates zero tensors per call after
+// the first warm-up.
+//
+// Because the cache path has no backward, we collapse pre- and
+// post-activation into the same buffer (GELUInPlace).
+func (ff *FeedForward) ForwardCachedStep(x *Tensor) *Tensor {
+	if x.Shape[0] != 1 {
+		panic("FeedForward.ForwardCachedStep expects a single-token input")
+	}
+	embedDim := x.Shape[1]
+	ffnDim := ff.W1.Shape[1]
+	ff.stepHiddenBuf = ensureRow(ff.stepHiddenBuf, ffnDim)
+	ff.stepOutBuf = ensureRow(ff.stepOutBuf, embedDim)
+
+	x.MatMulInto(ff.stepHiddenBuf, ff.W1)
+	ff.stepHiddenBuf.AddInPlace(ff.B1)
+	ff.stepHiddenBuf.GELUInPlace()
+
+	ff.stepHiddenBuf.MatMulInto(ff.stepOutBuf, ff.W2)
+	ff.stepOutBuf.AddInPlace(ff.B2)
+	return ff.stepOutBuf
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -187,19 +234,24 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 // ForwardCachedStep mirrors TransformerBlock.Forward semantics for a
 // single new token, given the per-layer KV cache.
 func (tb *TransformerBlock) ForwardCachedStep(x *Tensor, cache *KVCache) *Tensor {
-	// No backward in the cache path — nothing aliases x or attnOut/ffnOut,
-	// so fold the residual directly into the fresh sub-layer outputs.
-	normed1 := x.LayerNorm(tb.LN1Gamma, tb.LN1Beta)
-	attnOut := tb.Attn.ForwardCachedStep(normed1, cache)
+	// No backward in the cache path — nothing aliases x or attnOut/ffnOut.
+	// All sub-layers return scratch buffers they own; we fold residuals
+	// in place into those buffers.
+	embedDim := x.Shape[1]
+	tb.stepNormed1Buf = ensureRow(tb.stepNormed1Buf, embedDim)
+	tb.stepNormed2Buf = ensureRow(tb.stepNormed2Buf, embedDim)
+
+	x.LayerNormInto(tb.stepNormed1Buf, tb.LN1Gamma, tb.LN1Beta)
+	attnOut := tb.Attn.ForwardCachedStep(tb.stepNormed1Buf, cache)
+	// attnOut == mha.stepOutBuf. Add residual into it; we own it for this step.
 	attnOut.AddInPlace(x)
 	x = attnOut
 
-	normed2 := x.LayerNorm(tb.LN2Gamma, tb.LN2Beta)
-	ffnOut := tb.FFN.Forward(normed2)
+	x.LayerNormInto(tb.stepNormed2Buf, tb.LN2Gamma, tb.LN2Beta)
+	ffnOut := tb.FFN.ForwardCachedStep(tb.stepNormed2Buf)
+	// ffnOut == ff.stepOutBuf. Same in-place residual fold.
 	ffnOut.AddInPlace(x)
-	x = ffnOut
-
-	return x
+	return ffnOut
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -101,6 +101,14 @@ type MultiHeadAttention struct {
 	// to headDim and the current cache length respectively.
 	stepQhBuf     []float32 // [headDim]
 	stepScoresBuf []float32 // [cacheSeqLen]
+
+	// Scratch tensors for the single-token cached generation path, all
+	// [1, embedDim]. Allocated lazily on first ForwardCachedStep call.
+	// Reused across consecutive steps; safe because the cache path has no
+	// backward and the per-step outputs are fully overwritten each call.
+	stepQBuf, stepKBuf, stepVBuf *Tensor // [1, embedDim] Q/K/V projection
+	stepAttnBuf                  *Tensor // [1, embedDim] per-step attn aggregate
+	stepOutBuf                   *Tensor // [1, embedDim] WO projection output
 }
 
 // ensureMatrix returns t if it already has the requested 2D shape,
@@ -273,6 +281,13 @@ type FeedForward struct {
 	lastInput  *Tensor
 	lastHidden *Tensor // pre-activation
 	lastAct    *Tensor // post-GELU
+
+	// Scratch tensors for the cached generation path. stepHiddenBuf is
+	// [1, ffnDim] (also doubles as the post-GELU activation, see
+	// ForwardCachedStep); stepOutBuf is [1, embedDim]. Cache path has no
+	// backward, so we don't need separate pre/post-activation tensors.
+	stepHiddenBuf *Tensor // [1, ffnDim]
+	stepOutBuf    *Tensor // [1, embedDim]
 }
 
 // NewFeedForward creates a feed-forward network with Xavier initialization.
@@ -355,6 +370,9 @@ type TransformerBlock struct {
 	// by Backward.
 	ln1Mean, ln1InvStd []float32
 	ln2Mean, ln2InvStd []float32
+
+	// Scratch tensors for the cached generation path, [1, embedDim] each.
+	stepNormed1Buf, stepNormed2Buf *Tensor
 }
 
 // NewTransformerBlock creates a transformer block.
