@@ -89,6 +89,23 @@ type MultiHeadAttention struct {
 	lastQ, lastK, lastV *Tensor
 	lastAttnWeights *Tensor
 	lastAttnOut *Tensor
+
+	// Per-head scratch buffers reused across heads and across consecutive
+	// Forward calls. None of these are referenced by lastQ/lastK/etc, so
+	// they're safe to reuse between Forward invocations.
+	qhBuf, khBuf, vhBuf *Tensor // [seqLen, headDim]
+	scoresBuf           *Tensor // [seqLen, seqLen]
+	headOutBuf          *Tensor // [seqLen, headDim]
+}
+
+// ensureMatrix returns t if it already has the requested 2D shape,
+// otherwise allocates a fresh tensor. Used by the per-head scratch
+// fields to grow with seqLen on first use (and on the rare resize).
+func ensureMatrix(t *Tensor, rows, cols int) *Tensor {
+	if t != nil && len(t.Shape) == 2 && t.Shape[0] == rows && t.Shape[1] == cols {
+		return t
+	}
+	return NewTensor(rows, cols)
 }
 
 // NewMultiHeadAttention creates attention with Xavier-initialized weights.
@@ -158,14 +175,21 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 	// (Could be optimized by reshaping, but this is clearer)
 	allWeights := NewTensor(numHeads, seqLen, seqLen)
 
+	// Lazy-allocate per-head scratch buffers; reused across heads and
+	// across consecutive Forward calls (none escape into mha.last*).
+	mha.qhBuf = ensureMatrix(mha.qhBuf, seqLen, headDim)
+	mha.khBuf = ensureMatrix(mha.khBuf, seqLen, headDim)
+	mha.vhBuf = ensureMatrix(mha.vhBuf, seqLen, headDim)
+	mha.scoresBuf = ensureMatrix(mha.scoresBuf, seqLen, seqLen)
+	mha.headOutBuf = ensureMatrix(mha.headOutBuf, seqLen, headDim)
+	Qh, Kh, Vh := mha.qhBuf, mha.khBuf, mha.vhBuf
+	scores := mha.scoresBuf
+	headOut := mha.headOutBuf
+
 	for h := 0; h < numHeads; h++ {
 		hStart := h * headDim
 
-		// Extract head slices: Q_h, K_h, V_h are [seqLen, headDim]
-		Qh := NewTensor(seqLen, headDim)
-		Kh := NewTensor(seqLen, headDim)
-		Vh := NewTensor(seqLen, headDim)
-
+		// Extract head slices into the reused [seqLen, headDim] buffers.
 		for i := 0; i < seqLen; i++ {
 			for j := 0; j < headDim; j++ {
 				Qh.Data[i*headDim+j] = Q.Data[i*embedDim+hStart+j]
@@ -174,9 +198,8 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 			}
 		}
 
-		// Attention scores: [seqLen, seqLen] = Q_h × K_h^T / sqrt(headDim).
-		// MatMulTransposed returns a fresh tensor; scale and softmax operate in place.
-		scores := Qh.MatMulTransposed(Kh)
+		// Attention scores into scores buffer: [seqLen, seqLen] = Q_h × K_h^T / sqrt(headDim).
+		Qh.MatMulTransposedInto(scores, Kh)
 		scores.ScaleInPlace(scale)
 
 		// Causal mask: set future positions to -inf
@@ -188,13 +211,12 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 
 		// Softmax in place on the scores buffer.
 		scores.SoftmaxInPlace()
-		weights := scores
 
-		// Save weights for backward
-		copy(allWeights.Data[h*seqLen*seqLen:], weights.Data)
+		// Save weights for backward (copy needed: scores is recycled next head).
+		copy(allWeights.Data[h*seqLen*seqLen:], scores.Data)
 
-		// Weighted sum: [seqLen, headDim] = weights × V_h
-		headOut := weights.MatMul(Vh)
+		// Weighted sum into headOut buffer: [seqLen, headDim] = scores × V_h
+		scores.MatMulInto(headOut, Vh)
 
 		// Write head output to the correct slice of attnOut
 		for i := 0; i < seqLen; i++ {

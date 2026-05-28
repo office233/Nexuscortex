@@ -157,23 +157,37 @@ func (a *Tensor) MatMul(b *Tensor) *Tensor {
 	if len(a.Shape) != 2 || len(b.Shape) != 2 {
 		panic(fmt.Sprintf("MatMul requires 2D tensors, got %v × %v", a.Shape, b.Shape))
 	}
+	M, _ := a.Shape[0], a.Shape[1]
+	N := b.Shape[1]
+	c := NewTensor(M, N)
+	a.MatMulInto(c, b)
+	return c
+}
+
+// MatMulInto writes a × b into out. out must already be shaped [M, N]
+// where M = a.Shape[0] and N = b.Shape[1]. Lets callers recycle the
+// output buffer across iterations to avoid per-call allocations.
+func (a *Tensor) MatMulInto(out, b *Tensor) {
+	if len(a.Shape) != 2 || len(b.Shape) != 2 {
+		panic(fmt.Sprintf("MatMulInto requires 2D tensors, got %v × %v", a.Shape, b.Shape))
+	}
 	M, K := a.Shape[0], a.Shape[1]
 	K2, N := b.Shape[0], b.Shape[1]
 	if K != K2 {
-		panic(fmt.Sprintf("MatMul dimension mismatch: %v × %v", a.Shape, b.Shape))
+		panic(fmt.Sprintf("MatMulInto dimension mismatch: %v × %v", a.Shape, b.Shape))
+	}
+	if len(out.Shape) != 2 || out.Shape[0] != M || out.Shape[1] != N {
+		panic(fmt.Sprintf("MatMulInto out shape mismatch: want [%d %d], got %v", M, N, out.Shape))
 	}
 
-	// GPU fast path. Falls back to CPU on any error so a transient CUDA
-	// failure can't crash a training run.
 	if compute.IsCuBLASAvailable() && M*N*K >= gpuMatmulMinFlops {
-		if out, err := compute.MatMulGPU(a.Data, b.Data, M, N, K); err == nil {
-			return &Tensor{Data: out, Shape: []int{M, N}}
+		if data, err := compute.MatMulGPU(a.Data, b.Data, M, N, K); err == nil {
+			copy(out.Data, data)
+			return
 		}
 	}
 
-	c := NewTensor(M, N)
-	matmulRows(a.Data, b.Data, c.Data, 0, M, K, N)
-	return c
+	matmulRows(a.Data, b.Data, out.Data, 0, M, K, N)
 }
 
 // matmulRowsSequential computes C[rowStart:rowEnd, :] = A × B with the
@@ -220,21 +234,34 @@ func matmulRows(a, b, c []float32, rowStart, rowEnd, K, N int) {
 // rows are streamed contiguously inside the innermost loop), so we keep
 // it and only add per-row goroutine parallelism.
 func (a *Tensor) MatMulTransposed(b *Tensor) *Tensor {
+	M := a.Shape[0]
+	N := b.Shape[0]
+	c := NewTensor(M, N)
+	a.MatMulTransposedInto(c, b)
+	return c
+}
+
+// MatMulTransposedInto writes a × b^T into out. Same buffer-recycling
+// contract as MatMulInto. out must be [M, N] where M = a.Shape[0] and
+// N = b.Shape[0].
+func (a *Tensor) MatMulTransposedInto(out, b *Tensor) {
 	M, K := a.Shape[0], a.Shape[1]
 	N := b.Shape[0]
 	if b.Shape[1] != K {
-		panic(fmt.Sprintf("MatMulTransposed dimension mismatch: %v × %v^T", a.Shape, b.Shape))
+		panic(fmt.Sprintf("MatMulTransposedInto dimension mismatch: %v × %v^T", a.Shape, b.Shape))
+	}
+	if len(out.Shape) != 2 || out.Shape[0] != M || out.Shape[1] != N {
+		panic(fmt.Sprintf("MatMulTransposedInto out shape mismatch: want [%d %d], got %v", M, N, out.Shape))
 	}
 
 	if compute.IsCuBLASAvailable() && M*N*K >= gpuMatmulMinFlops {
-		if out, err := compute.MatMulNTGPU(a.Data, b.Data, M, N, K); err == nil {
-			return &Tensor{Data: out, Shape: []int{M, N}}
+		if data, err := compute.MatMulNTGPU(a.Data, b.Data, M, N, K); err == nil {
+			copy(out.Data, data)
+			return
 		}
 	}
 
-	c := NewTensor(M, N)
-	matmulTRows(a.Data, b.Data, c.Data, 0, M, K, N)
-	return c
+	matmulTRows(a.Data, b.Data, out.Data, 0, M, K, N)
 }
 
 func matmulTRowsSequential(a, b, c []float32, rowStart, rowEnd, K, N int) {
