@@ -6,7 +6,6 @@ package cortex
 
 import (
 	"runtime"
-	"sync"
 )
 
 // tensorParallelMinRows is the smallest row count that justifies
@@ -34,6 +33,13 @@ func tensorParallelism() int {
 // on each chunk concurrently. Blocks until every chunk has finished.
 // The callee receives [lo, hi) and should treat the slice as its
 // exclusive write region (no synchronisation provided).
+//
+// The last chunk runs on the calling goroutine instead of a fresh one;
+// that saves one goroutine spawn (and its closure allocation) per call.
+// Worker completion is signalled through a buffered channel rather than
+// sync.WaitGroup so the synchronisation primitive stays on the stack
+// (WaitGroup escapes to the heap when captured by the spawned
+// goroutines' defer).
 func runRowParallel(rows, workers int, fn func(lo, hi int)) {
 	if workers <= 1 || rows <= 1 {
 		fn(0, rows)
@@ -44,7 +50,10 @@ func runRowParallel(rows, workers int, fn func(lo, hi int)) {
 	}
 	chunk := (rows + workers - 1) / workers // ceil(rows / workers)
 
-	var wg sync.WaitGroup
+	// Pre-compute chunk boundaries.
+	type span struct{ lo, hi int }
+	var spans [16]span // capped at tensorParallelism's max
+	nSpans := 0
 	for w := 0; w < workers; w++ {
 		lo := w * chunk
 		if lo >= rows {
@@ -54,11 +63,28 @@ func runRowParallel(rows, workers int, fn func(lo, hi int)) {
 		if hi > rows {
 			hi = rows
 		}
-		wg.Add(1)
-		go func(lo, hi int) {
-			defer wg.Done()
-			fn(lo, hi)
-		}(lo, hi)
+		spans[nSpans] = span{lo, hi}
+		nSpans++
 	}
-	wg.Wait()
+	if nSpans == 1 {
+		fn(spans[0].lo, spans[0].hi)
+		return
+	}
+
+	// done is buffered to nSpans-1 so background workers never block.
+	// One spawn (and one closure alloc) saved by running the last span
+	// here on the caller's goroutine.
+	done := make(chan struct{}, nSpans-1)
+	for i := 0; i < nSpans-1; i++ {
+		s := spans[i]
+		go func() {
+			fn(s.lo, s.hi)
+			done <- struct{}{}
+		}()
+	}
+	last := spans[nSpans-1]
+	fn(last.lo, last.hi)
+	for i := 0; i < nSpans-1; i++ {
+		<-done
+	}
 }
