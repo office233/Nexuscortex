@@ -8,9 +8,10 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go" />
   <img src="https://img.shields.io/badge/CUDA-Optional-76B900?style=flat-square&logo=nvidia" />
-  <img src="https://img.shields.io/badge/Params-500M-purple?style=flat-square" />
-  <img src="https://img.shields.io/badge/Build-Passing-brightgreen?style=flat-square" />
-  <img src="https://img.shields.io/badge/Tests-All_Pass-brightgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/Params-500M+-purple?style=flat-square" />
+  <img src="https://img.shields.io/badge/Tests-137_passing-brightgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/Source_Files-107-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/Dependencies-4-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" />
 </p>
 
@@ -110,13 +111,16 @@ Every AI project today calls an API. This one builds the brain from first princi
 |---------|:---------------:|:------------:|
 | Weight format | float32 (4 bytes) | Ternary {-1,0,+1} (0.25 bytes) |
 | Storage per param | 4 bytes | 0.25 bytes (**16x smaller**) |
+| Forward pass | Dense (all params) | Sparse (**73.9x faster** quantum) |
+| Allocations/tick | Varies | **Zero.** 0 B/op per neural tick |
+| 1M neurons/tick | Seconds | **11.8 ms** |
 | Learning | Static (needs retraining) | Continuous (online + sleep) |
 | Memory | In weights only | Episodic + Semantic + Working |
 | Forgetting | Catastrophic | Controlled (sleep consolidation) |
 | Activation | Dense (all params) | Sparse (expert routing) |
-| Emotion | None | Valence-arousal vector space |
+| Emotion | None | 5D valence-arousal vector space |
 | GPU requirement | Mandatory | Optional (CPU-first, CUDA optional) |
-| External dependencies | PyTorch, CUDA, etc. | **Zero.** Pure Go. |
+| External dependencies | PyTorch, CUDA, etc. | **4 Go modules.** Pure Go. |
 
 ---
 
@@ -217,8 +221,20 @@ go run ./cmd/cortex-web -port 8080 -data-dir ./data/cortex -open
 ```
 ok   nexus-cortex/cmd/cortex       1.3s    ✅
 ok   nexus-cortex/cmd/cortex-web   9.5s    ✅
-ok   nexus-cortex/cortex          86.3s    ✅  (30+ tests)
+ok   nexus-cortex/cortex          86.3s    ✅  (137 tests + 3 fuzz tests)
 ```
+
+### Benchmark Performance
+
+| Operation | Speed | Allocations |
+|-----------|-------|-------------|
+| RadioNeuron Pack | **0.24 ns/op** | 0 allocs |
+| RadioBus Emit (256 channels) | **1.65 ns/op** | 0 allocs |
+| RadioCortex 100K neurons/tick | **1.18 ms** | 0 allocs |
+| RadioCortex 1M neurons/tick | **11.8 ms** | 0 allocs |
+| ForwardSparse vs Dense | **26.3× faster** | — |
+| ForwardQuantum vs Dense | **73.9× faster** | — |
+| NeuroRadioCortex 100K tiles/tick | **15.2 ms** | 0 allocs |
 
 ---
 
@@ -297,10 +313,12 @@ Nexuscortex/
 | **Language** | Go 1.21+ — zero Python, zero JS frameworks |
 | **Compute** | CPU-first, optional CUDA kernels |
 | **Weight format** | RGBA32 ternary tiles (0.25 bytes/param) |
-| **Storage** | JSON persistence + planned NTX binary format |
-| **Dashboard** | Vanilla HTML/CSS/JS with glassmorphism |
-| **CI** | GitHub Actions (`go test`, `go vet`) |
-| **Dependencies** | **None.** Pure Go standard library. |
+| **Spiking neurons** | LIF neurons with STDP, 6,400 in Thousand Brains alone |
+| **Storage** | JSON persistence + NTX1 binary format (mmap-ready) |
+| **Dashboard** | Vanilla HTML/CSS/JS — cyberpunk glassmorphism |
+| **CI** | GitHub Actions (`go test -race`, `go vet`, `govulncheck`, `staticcheck`, `gosec`) |
+| **Security** | CSRF protection, SSRF hardening, crypto/rand tokens, XSS escaping |
+| **Dependencies** | 4 Go modules: `govaluate`, `mmap-go`, `go-webgpu`, `golang.org/x/sys` |
 
 ---
 
