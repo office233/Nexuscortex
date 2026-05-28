@@ -84,6 +84,52 @@ func (h *SDRAttentionHead) Store(key, value SDR) {
 	h.Count++
 }
 
+// scoredKey is the (key-index, overlap-score) pair used during top-K
+// selection in Query / QueryWithScratch. Lifted to package level so
+// QueryScratch can reuse its backing array across calls.
+type scoredKey struct {
+	idx   int
+	score int
+}
+
+// QueryScratch holds reusable buffers for SDRAttentionHead.QueryWithScratch.
+//
+// A QueryScratch is owned by a single caller (e.g. one CortexBlock) and is
+// NOT safe for concurrent use. The plain Query() method retains the previous
+// allocate-per-call behaviour and is still safe to call concurrently on
+// the same Head with the same SDR inputs.
+//
+// Typical usage:
+//
+//	var s QueryScratch
+//	for token := range tokens {
+//	    attended := head.QueryWithScratch(query, topK, &s)
+//	    ...
+//	}
+type QueryScratch struct {
+	topItems  []scoredKey
+	bitCounts []uint8
+}
+
+// ensure resizes the scratch buffers for a Query on a head with the given
+// ValueSize and topK. Existing capacity is reused when sufficient.
+func (s *QueryScratch) ensure(valueSize, topK int) {
+	if cap(s.topItems) < topK {
+		s.topItems = make([]scoredKey, 0, topK)
+	} else {
+		s.topItems = s.topItems[:0]
+	}
+	if cap(s.bitCounts) < valueSize {
+		s.bitCounts = make([]uint8, valueSize)
+	} else {
+		s.bitCounts = s.bitCounts[:valueSize]
+		// Zero the slice for the new call.
+		for i := range s.bitCounts {
+			s.bitCounts[i] = 0
+		}
+	}
+}
+
 // Query performs attention: finds the top-K most similar keys to the query
 // and returns a blended value SDR.
 //
@@ -92,8 +138,21 @@ func (h *SDRAttentionHead) Store(key, value SDR) {
 //   2. Select top-K highest scores
 //   3. Return union of corresponding values (weighted by overlap)
 //
-// Zero allocations on the score computation path.
+// Allocates internal scratch on every call. For repeated calls in a hot
+// loop, use QueryWithScratch with a caller-owned QueryScratch instead.
 func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
+	var s QueryScratch
+	return h.QueryWithScratch(query, topK, &s)
+}
+
+// QueryWithScratch is the allocation-free variant of Query.
+// The caller provides a QueryScratch that holds the top-K buffer and the
+// bit-count accumulator; both are reused across calls.
+//
+// The returned SDR is still freshly allocated (its Bits slice is needed
+// downstream and cannot be aliased with scratch state). All other
+// intermediate allocations are eliminated.
+func (h *SDRAttentionHead) QueryWithScratch(query SDR, topK int, scratch *QueryScratch) SDR {
 	n := h.Count
 	if n > h.MaxSlots {
 		n = h.MaxSlots
@@ -108,67 +167,53 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 		topK = 1
 	}
 
-	// Phase 1: Compute overlap scores using popcount
-	// This is O(N × SDRSize/64) — each overlap is a few popcount instructions
-	type scored struct {
-		idx   int
-		score int
-	}
+	scratch.ensure(h.ValueSize, topK)
+	topItems := scratch.topItems
 
-	// Use a simple insertion-sort top-K to avoid allocating a full scores array
-	topItems := make([]scored, 0, topK)
-
+	// Phase 1: Compute overlap scores using popcount.
 	for i := 0; i < n; i++ {
 		keyIdx := i % h.MaxSlots
 		score := overlapCount(query, h.Keys[keyIdx])
 
 		if len(topItems) < topK {
-			// Insert maintaining sorted order (descending)
 			inserted := false
 			for j := 0; j < len(topItems); j++ {
 				if score > topItems[j].score {
-					topItems = append(topItems, scored{})
+					topItems = append(topItems, scoredKey{})
 					copy(topItems[j+1:], topItems[j:])
-					topItems[j] = scored{idx: keyIdx, score: score}
+					topItems[j] = scoredKey{idx: keyIdx, score: score}
 					inserted = true
 					break
 				}
 			}
 			if !inserted {
-				topItems = append(topItems, scored{idx: keyIdx, score: score})
+				topItems = append(topItems, scoredKey{idx: keyIdx, score: score})
 			}
 		} else if score > topItems[topK-1].score {
-			// Replace the lowest in top-K
 			for j := 0; j < topK; j++ {
 				if score > topItems[j].score {
 					copy(topItems[j+1:], topItems[j:])
-					topItems[j] = scored{idx: keyIdx, score: score}
+					topItems[j] = scoredKey{idx: keyIdx, score: score}
 					break
 				}
 			}
 		}
 	}
 
-	// Phase 2: Blend values from top-K matches
-	// Higher overlap = more bits from that value survive
-	result := NewSDR(h.ValueSize)
-
 	if len(topItems) == 0 {
-		return result
+		return NewSDR(h.ValueSize)
 	}
 
-	// For single top match, just return its value
+	// Phase 2: blend values from top-K matches.
+	// Single best match: clone its value directly.
 	if len(topItems) == 1 || topItems[0].score == 0 {
 		if topItems[0].score > 0 {
 			return h.Values[topItems[0].idx].Clone()
 		}
-		return result
+		return NewSDR(h.ValueSize)
 	}
 
-	// Union top-K values with score-weighted bit selection
-	// Bits that appear in multiple high-scoring values are reinforced
-	// Allocated per call — cannot be cached because Query() may run concurrently.
-	bitCounts := make([]uint8, h.ValueSize)
+	bitCounts := scratch.bitCounts
 	maxScore := topItems[0].score
 	if maxScore == 0 {
 		maxScore = 1
@@ -179,15 +224,13 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 			continue
 		}
 		v := h.Values[item.idx]
-		// Weight: how relevant is this value (0-255 scale)
 		weight := uint8((item.score * 255) / maxScore)
 		if weight < sdrAttentionMinWeight {
-			continue // Too weak, skip
+			continue
 		}
 
 		for _, bit := range v.ActiveIndices() {
 			if bit < len(bitCounts) {
-				// Saturating add
 				newVal := uint16(bitCounts[bit]) + uint16(weight)
 				if newVal > 255 {
 					newVal = 255
@@ -197,14 +240,11 @@ func (h *SDRAttentionHead) Query(query SDR, topK int) SDR {
 		}
 	}
 
-	// Select the top ActiveCount bits by accumulated weight
 	targetActive := query.ActiveCount
 	if targetActive == 0 {
-		targetActive = sdrAttentionDefaultSparsity // Default SDR sparsity
+		targetActive = sdrAttentionDefaultSparsity
 	}
-	result = selectTopBits(bitCounts, h.ValueSize, targetActive)
-
-	return result
+	return selectTopBits(bitCounts, h.ValueSize, targetActive)
 }
 
 // selectTopBits creates an SDR by selecting the N bits with highest counts.

@@ -91,10 +91,10 @@ func NewLinearScanLayer(inputSize, stateSize, outputSize int, decayRate uint8) *
 // This is the core recurrence: O(1) memory, O(stateSize) compute.
 //
 // Algorithm:
-//   1. DECAY: Stochastically clear bits in state (forgetting)
-//   2. GATE: Compute which input dimensions are important
-//   3. UPDATE: Mix gated input into state
-//   4. OUTPUT: Project state through ternary layer
+//  1. DECAY: Stochastically clear bits in state (forgetting)
+//  2. GATE: Compute which input dimensions are important
+//  3. UPDATE: Mix gated input into state
+//  4. OUTPUT: Project state through ternary layer
 func (l *LinearScanLayer) Step(input SDR) SDR {
 	// 1. DECAY — Stochastic forgetting
 	// Each active bit has a (DecayRate/256) probability of being cleared.
@@ -294,11 +294,11 @@ func sdrAndNot(a, b SDR) SDR {
 // to form the full Cortex Transformer.
 //
 // Processing order per block:
-//   1. Input → TernaryLayer (feature extraction)
-//   2. → SDR Attention (contextual retrieval)
-//   3. → Linear Scan (temporal state update)
-//   4. → TernaryLayer (output projection)
-//   5. Residual connection: output = output + input
+//  1. Input → TernaryLayer (feature extraction)
+//  2. → SDR Attention (contextual retrieval)
+//  3. → Linear Scan (temporal state update)
+//  4. → TernaryLayer (output projection)
+//  5. Residual connection: output = output + input
 type CortexBlock struct {
 	// Feature extraction
 	FeatureLayer *TernaryLayer
@@ -320,9 +320,10 @@ type CortexBlock struct {
 	// concurrent use on the same block — but a single CortexBlock has
 	// always held mutable state (Attention cache, Scan state), so the
 	// caller-must-serialize contract is unchanged.
-	scratchActIn   []int16
-	scratchActOut  []int16
-	scratchUnion   SDR // single buffer is enough: residual is the block's return value
+	scratchActIn  []int16
+	scratchActOut []int16
+	scratchUnion  SDR // single buffer is enough: residual is the block's return value
+	attnScratch   QueryScratch
 }
 
 // NewCortexBlock creates a complete processing block.
@@ -373,9 +374,10 @@ func (b *CortexBlock) ProcessToken(input SDR) SDR {
 	b.FeatureLayer.forwardInto(b.scratchActIn, b.scratchActOut)
 	features := activationsToSDR(b.scratchActOut, input.ActiveCount)
 
-	// 2. SDR Attention — retrieve relevant context
+	// 2. SDR Attention — retrieve relevant context. QueryWithScratch
+	//    reuses topItems and bitCounts buffers owned by this block.
 	b.Attention.Store(features, features)
-	attended := b.Attention.Query(features, b.TopK)
+	attended := b.Attention.QueryWithScratch(features, b.TopK, &b.attnScratch)
 
 	// 3. Linear Scan — update temporal state
 	scanned := b.Scan.StepFast(attended)
@@ -518,12 +520,12 @@ type UltraDeepStack struct {
 	OutputProj  *TernaryLayer // dim → dim (scan output)
 
 	// Per-layer independent state
-	ScanStates []SDR   // Each layer's temporal memory
+	ScanStates []SDR // Each layer's temporal memory
 	DecayRate  uint8
 
-	NumLayers  int
-	Dim        int
-	HiddenDim  int // Hidden dimension (can be > Dim for more params)
+	NumLayers int
+	Dim       int
+	HiddenDim int // Hidden dimension (can be > Dim for more params)
 
 	// Counters for scan decay
 	decayCounters []uint64
@@ -532,10 +534,11 @@ type UltraDeepStack struct {
 // NewUltraDeepStack creates an extreme-depth shared stack.
 //
 // Parameters:
-//   numLayers: number of virtual layers (1000 for 5T effective from 5B stored)
-//   dim: SDR dimension (e.g., 10000 for 5B params with hiddenDim=10000)
-//   hiddenDim: hidden dimension for feature extraction (controls param count)
-//   decayRate: temporal memory decay (0-255)
+//
+//	numLayers: number of virtual layers (1000 for 5T effective from 5B stored)
+//	dim: SDR dimension (e.g., 10000 for 5B params with hiddenDim=10000)
+//	hiddenDim: hidden dimension for feature extraction (controls param count)
+//	decayRate: temporal memory decay (0-255)
 //
 // Total stored params = dim*hiddenDim + hiddenDim*dim + 3*(dim*dim)
 // Total effective params = storedParams × numLayers
@@ -718,6 +721,7 @@ func (u *UltraDeepStack) Stats() string {
 		u.NumLayers,
 	)
 }
+
 // ---------------------------------------------------------------------------
 // SharedCortexStack — ALBERT-Style Weight Sharing
 // ---------------------------------------------------------------------------
@@ -762,6 +766,7 @@ type SharedCortexStack struct {
 	scratchActOut  []int16 // output activations from Forward
 	scratchUnion   [2]SDR  // double-buffered residual SDR
 	scratchUnionIx int     // index of the buffer to write next
+	attnScratch    QueryScratch
 }
 
 // NewSharedCortexStack creates an ALBERT-style shared stack.
@@ -834,7 +839,6 @@ func (s *SharedCortexStack) initScratch() {
 	}
 }
 
-
 // ProcessToken runs one token through all N virtual layers.
 // The shared weights are applied N times with different state.
 func (s *SharedCortexStack) ProcessToken(input SDR) SDR {
@@ -863,9 +867,10 @@ func (s *SharedCortexStack) processLayer(input SDR, layerIdx int) SDR {
 	s.SharedFeatureLayer.forwardInto(s.scratchActIn, s.scratchActOut)
 	features := activationsToSDR(s.scratchActOut, input.ActiveCount)
 
-	// 2. SDR Attention — PER-LAYER independent cache
+	// 2. SDR Attention — PER-LAYER independent cache. attnScratch is
+	//    shared across layers within this stack (layers run sequentially).
 	s.Attentions[layerIdx].Store(features, features)
-	attended := s.Attentions[layerIdx].Query(features, s.TopK)
+	attended := s.Attentions[layerIdx].QueryWithScratch(features, s.TopK, &s.attnScratch)
 
 	// 3. Linear Scan — PER-LAYER independent state
 	scanned := s.Scans[layerIdx].StepFast(attended)
@@ -1077,4 +1082,3 @@ func unionInto(dst *SDR, a, b SDR) {
 	}
 	dst.ActiveCount = count
 }
-
