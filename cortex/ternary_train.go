@@ -1,9 +1,5 @@
 package cortex
 
-import (
-	"time"
-)
-
 // ternary_train.go — Probabilistic STDP for Ternary Weights
 //
 // Implements a biologically plausible learning rule for the RGBA32 ternary
@@ -27,10 +23,12 @@ func (l *TernaryLayer) UpdateProbabilisticSTDP(preSynaptic []int16, errorSignal 
 		return
 	}
 
-	// Fast xorshift PRNG state seeded by time
-	prngState := uint64(time.Now().UnixNano())
+	// Fast xorshift PRNG state — stocat pe layer pentru reproductibilitate.
+	// Dacă nu a fost seed-uit explicit (PRNGState==0), folosim o constantă
+	// derivată din topologie (deterministă, dar diferită între layere).
+	prngState := l.PRNGState
 	if prngState == 0 {
-		prngState = 1 // PRNG state cannot be 0
+		prngState = uint64(l.InputSize)*0x9E3779B97F4A7C15 + uint64(l.OutputSize) + 1
 	}
 
 	fastRand8 := func() uint8 {
@@ -39,6 +37,9 @@ func (l *TernaryLayer) UpdateProbabilisticSTDP(preSynaptic []int16, errorSignal 
 		prngState ^= prngState << 17
 		return uint8(prngState)
 	}
+	// State-ul avansează între apeluri — esențial pentru ca epoci succesive
+	// să nu reia aceeași secvență.
+	defer func() { l.PRNGState = prngState }()
 
 	for j := 0; j < l.OutputSize; j++ {
 		err := errorSignal[j]

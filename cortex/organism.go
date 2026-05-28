@@ -194,6 +194,19 @@ func NewOrganism(cfg Config, rng *rand.Rand) *Organism {
 		Rng: rng,
 	}
 
+	// Wire the pluggable Tool registry into Reasoning. Order matters —
+	// the more specific / cheaper matchers go first, the general /
+	// expensive ones last. The hardcoded Reasoning skills (arithmetic,
+	// sequence, syllogism, sort, word problem) remain as the fallback
+	// after every registered tool misses.
+	tools := NewToolRegistry()
+	tools.Register(DateTimeTool{})
+	tools.Register(UnitConvertTool{})
+	tools.Register(MathSquareRootTool{})
+	tools.Register(MathPowerTool{})
+	tools.Register(NewHippoSearchTool(org.Hippocampus, org.Wernicke, org.Brain))
+	org.Reasoning.AttachTools(tools)
+
 	// Only create RadioCortex if enabled
 	if cfg.RadioCortexEnabled {
 		org.RadioCortex = NewRadioCortex(cfg.RadioNeuronCount, rng)
@@ -360,11 +373,76 @@ func (o *Organism) Process(input string) string {
 	var memorySimilarity uint8
 	var memoryText string
 
+	recallDebugf("combinedSDR active=%d, HippoRecallThresh=%d",
+		combinedSDR.ActiveCount, o.Config.HippocampusRecallThresh)
 	if mem, sim, ok := o.Hippocampus.RecallScored(combinedSDR, o.Config.HippocampusRecallThresh); ok {
-		responseSDR = mem.Output
-		memoryUsed = true
-		memorySimilarity = sim
-		memoryText = extractAnswerFromContext(mem.Context)
+		// Only accept the SDR recall if the stored context looks like a
+		// real Q|A pair, not a bare question echoed back from an earlier
+		// Process() call that stored its own input. The "question | answer"
+		// shape is the only one that lets us hand a useful answer to
+		// downstream generators or short-circuit them via fast-path.
+		// Without this guard a fat combinedSDR (Wernicke + WorkingMem
+		// after a learning burst) hits any sufficiently-overlapping
+		// stored input and confidently returns garbage.
+		ctx := mem.Context
+		extracted := extractAnswerFromContext(ctx)
+		if strings.Contains(ctx, " | ") && extracted != "" && !sameText(extracted, input) {
+			responseSDR = mem.Output
+			memoryUsed = true
+			memorySimilarity = sim
+			memoryText = extracted
+			recallDebugf("SDR match accepted sim=%d, ctx=%q", sim, truncStr(ctx, 80))
+
+			// Fast-path: a strong SDR match on a Q|A memory is as close
+			// to an exact recall as the hippocampus can deliver. Return
+			// the stored answer directly, bypassing Broca / FractalCortex
+			// generators that would otherwise hallucinate over the top
+			// of a correct memory.
+			//
+			// CAVEAT (discovered 2026-05-26 via cortex-eval): Wernicke's
+			// union-encoded SDRs collapse structurally similar questions
+			// to near-identical vectors. "What is the capital of France?"
+			// hits the stored "What is the capital of Germany?" memory
+			// with sim=255 — so the fast-path returns "Berlin" with max
+			// confidence for any "capital of X" question. The keyword
+			// path (RecallByKeywordsExpanded), which can distinguish on
+			// the rare token (france vs germany vs japan), gets the right
+			// answer but is never consulted because the fast-path returns
+			// first.
+			//
+			// Fix: before taking the fast-path, ask the keyword path for
+			// a second opinion. If keywords pick a DIFFERENT memory with
+			// competitive confidence (>= 75% of SDR sim), prefer the
+			// keyword answer — keywords cannot hallucinate on a unique
+			// token the way union SDRs can. Same memory + agreeing paths
+			// is the original happy case and keeps the fast-path.
+			const directRecallThresh uint8 = 200
+			if sim >= directRecallThresh {
+				if o.fastPathKeywordVeto(input, ctx) {
+					// SDR-collapse fingerprint detected: NONE of the
+					// distinctive (non-stopword) tokens from the query
+					// appear in the SDR's chosen memory. The fast-path
+					// would return a confident answer about the wrong
+					// topic. Reset SDR-path state so the keyword path
+					// below (`kwScore > memorySimilarity`) has room to
+					// win, then fall through.
+					recallDebugf("fast-path vetoed: none of query keywords appear in ctx=%q",
+						truncStr(ctx, 80))
+					memoryUsed = false
+					memorySimilarity = 0
+					memoryText = ""
+				} else {
+					o.Prefrontal.Confidence = sim
+					o.learnFromInteraction(input, memoryText, combinedSDR)
+					o.WorkingMem.Store(combinedSDR, input, sim)
+					o.WorkingMem.Tick()
+					return memoryText
+				}
+			}
+		} else {
+			recallDebugf("SDR match REJECTED sim=%d, ctx=%q (no Q|A or echo)",
+				sim, truncStr(ctx, 80))
+		}
 	}
 
 	// Keyword-based fallback: if SDR recall failed or produced a
@@ -389,18 +467,65 @@ func (o *Organism) Process(input string) string {
 			threshold = 2
 		}
 
+		recallDebugf("entering keyword path: memoryUsed=%v memorySim=%d threshold=%d tokens=%v",
+			memoryUsed, memorySimilarity, threshold, inputTokens)
+
+		// Same Q|A guard as the SDR path: a keyword hit on a stored
+		// bare input (no " | answer") is just an echo, not a useful
+		// recall. acceptCtx filters those out before they can poison
+		// memoryText / memorySimilarity for the downstream pipeline.
+		acceptCtx := func(ctx string) (string, bool) {
+			ans := extractAnswerFromContext(ctx)
+			if strings.Contains(ctx, " | ") && ans != "" && !sameText(ans, input) {
+				return ans, true
+			}
+			return "", false
+		}
+
 		// Try expanded recall first (uses Brain associations for synonym expansion).
 		if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywordsExpanded(inputTokens, threshold, combinedSDR, o.Brain); kwOK && kwScore > memorySimilarity {
-			responseSDR = kwMem.Output
-			memoryUsed = true
-			memorySimilarity = kwScore
-			memoryText = extractAnswerFromContext(kwMem.Context)
+			if ans, ok := acceptCtx(kwMem.Context); ok {
+				responseSDR = kwMem.Output
+				memoryUsed = true
+				memorySimilarity = kwScore
+				memoryText = ans
+				recallDebugf("kw-expanded accepted score=%d, ctx=%q",
+					kwScore, truncStr(kwMem.Context, 80))
+			} else {
+				recallDebugf("kw-expanded REJECTED score=%d, ctx=%q",
+					kwScore, truncStr(kwMem.Context, 80))
+			}
 		} else if kwMem, kwScore, kwOK := o.Hippocampus.RecallByKeywords(inputTokens, threshold, combinedSDR); kwOK && kwScore > memorySimilarity {
-			// Fall back to non-expanded keyword recall.
-			responseSDR = kwMem.Output
-			memoryUsed = true
-			memorySimilarity = kwScore
-			memoryText = extractAnswerFromContext(kwMem.Context)
+			if ans, ok := acceptCtx(kwMem.Context); ok {
+				responseSDR = kwMem.Output
+				memoryUsed = true
+				memorySimilarity = kwScore
+				memoryText = ans
+				recallDebugf("kw-plain accepted score=%d, ctx=%q",
+					kwScore, truncStr(kwMem.Context, 80))
+			} else {
+				recallDebugf("kw-plain REJECTED score=%d, ctx=%q",
+					kwScore, truncStr(kwMem.Context, 80))
+			}
+		} else {
+			recallDebugf("no keyword match accepted (memorySim=%d)", memorySimilarity)
+		}
+
+		// Same fast-path as after RecallScored: a near-perfect keyword
+		// match on a "question | answer" memory should be returned
+		// directly. Without this short-circuit the downstream Broca /
+		// FractalCortex generator can override a correct stored answer
+		// with a hallucination derived from more frequent vocabulary.
+		// The threshold (250) matches the SDR fast-path threshold so
+		// both paths agree on what counts as "exact recall".
+		const directRecallThresh uint8 = 200
+		if memoryUsed && memorySimilarity >= directRecallThresh &&
+			memoryText != "" && !sameText(memoryText, input) {
+			o.Prefrontal.Confidence = memorySimilarity
+			o.learnFromInteraction(input, memoryText, combinedSDR)
+			o.WorkingMem.Store(combinedSDR, input, memorySimilarity)
+			o.WorkingMem.Tick()
+			return memoryText
 		}
 	}
 
@@ -506,11 +631,31 @@ func (o *Organism) Process(input string) string {
 		if memoryUsed && memoryText != "" {
 			mem = memoryText
 		}
-		responseText = o.Broca.GenerateWithTransformer(
-			o.Transformer, o.Tokenizer,
-			understanding.Words, mem,
-			confidence, o.Config.MaxGenWords,
-		)
+
+		// When CoT/Self-Consistency is enabled, draw N samples and vote.
+		// On miss (e.g. all samples empty), fall through to the regular
+		// single-shot path so we never regress availability.
+		if o.Config.CoTEnabled && o.Config.CoTSamples > 1 {
+			cot := CoTConfig{
+				Samples:         o.Config.CoTSamples,
+				MaxTokens:       o.Config.MaxGenWords,
+				BaseTemperature: o.Config.CoTBaseTemperature,
+				TopK:            40,
+				UseCoTPrimer:    o.Config.CoTUsePrimer,
+			}
+			if ans, ok := GenerateWithSelfConsistency(
+				o.Transformer, o.Tokenizer, mem, understanding.Words, cot,
+			); ok {
+				responseText = ans
+			}
+		}
+		if responseText == "" {
+			responseText = o.Broca.GenerateWithTransformer(
+				o.Transformer, o.Tokenizer,
+				understanding.Words, mem,
+				confidence, o.Config.MaxGenWords,
+			)
+		}
 	}
 
 	// ── PRIORITY 0: Hippocampus Direct Recall ──────────────────────
@@ -593,9 +738,12 @@ func (o *Organism) Process(input string) string {
 
 	// ── 6. LEARN ─────────────────────────────────────────────────
 	// Store the Prefrontal-refined SDR in Hippocampus (not re-encoded) if we have a valid response.
-	// This preserves the neural computation's output.
+	// Context is stored as "input | response" so the recall path can
+	// extract a real answer later. Storing only the input used to leave
+	// orphaned echo memories that, after WorkingMem-poisoned SDR drift,
+	// were retrieved as bogus "answers" (the literal question text).
 	if responseText != "" && responseText != NoConfidentResponse && combinedSDR.ActiveCount > 0 && responseSDR.ActiveCount > 0 {
-		o.Hippocampus.Store(combinedSDR, responseSDR, input)
+		o.Hippocampus.Store(combinedSDR, responseSDR, input+" | "+responseText)
 	}
 
 	// Cache in Cerebellum if confidence is high enough.
@@ -723,11 +871,128 @@ func (o *Organism) Learn(text string) {
 // The hippocampus context stores "question | answer" so the keyword
 // index covers vocabulary from both sides, enabling generalization
 // queries that use question-adjacent words to locate the memory.
-func (o *Organism) LearnQA(question, answer string) {
+// fastPathKeywordVeto detects the specific failure mode where Wernicke's
+// union-encoded SDR collapses structurally similar questions to nearly
+// identical vectors and the fast-path hands back the wrong stored
+// memory with maximum confidence. The classic case (discovered via
+// cortex-eval on 2026-05-26):
+//
+//	Query: "What is the capital of France?"
+//	SDR best match: mem #398 "What is the capital of Germany? | ... Berlin"
+//	                 (sim=255, because "of/the/capital/?" dominate the SDR
+//	                 and "france/germany" barely register)
+//	Keyword best match: mem #402 "What is France's capital? | ... Paris"
+//	                 (correctly picks france)
+//
+// The honest signal of collapse is more specific than "no keyword
+// overlaps". "capital" overlaps between the France query and the
+// Berlin memory — but "capital" is a TOPIC word shared across many
+// memories (high document frequency in the keyword index). The token
+// that actually discriminates France-vs-Germany-vs-Japan is the rare
+// one: "france", "japan", "germany". When the rare token from the
+// query is absent from the SDR's chosen memory, that's the smoking
+// gun for SDR collapse.
+//
+// Algorithm: for each distinctive (non-stopword) token in the query,
+// look up its document frequency in the keyword index. The RAREST one
+// is the discriminator. If the discriminator does NOT appear in the
+// SDR's chosen context, veto the fast-path.
+//
+// This cleanly separates:
+//
+//	Bug case   (France→Berlin):  rare token = "france" (in N memories
+//	                              about France), ABSENT from Berlin
+//	                              memory → VETO ✓
+//	Good case  (relativity):     rare token = "relativity" or
+//	                              "developed", present in the Einstein
+//	                              memory → NO VETO ✓
+//	Good case  (photosynthesis): rare token = "photosynthesis", present
+//	                              in the photosynthesis memory →
+//	                              NO VETO ✓
+//
+// Returns true when the fast-path should be SKIPPED (collapse
+// detected). Returns false when the fast-path is safe to take.
+func (o *Organism) fastPathKeywordVeto(input, sdrCtx string) bool {
+	tokens := Tokenize(input)
+	ctxLower := strings.ToLower(sdrCtx)
+
+	// Find each distinctive (non-stopword) token's document frequency
+	// in the keyword index. Lower frequency = more discriminating.
+	type kwInfo struct {
+		raw  string
+		stem string
+		df   int // document frequency in keyword index
+	}
+	var distinctive []kwInfo
+	for _, t := range tokens {
+		tl := strings.ToLower(t)
+		if tl == "" || hippoStopWords[tl] {
+			continue
+		}
+		stem := stemWord(tl)
+		df := o.Hippocampus.KeywordFrequency(stem)
+		distinctive = append(distinctive, kwInfo{raw: tl, stem: stem, df: df})
+	}
+	if len(distinctive) == 0 {
+		return false
+	}
+
+	// Find the rarest distinctive token (lowest df). That's our
+	// discriminator — the one that actually differentiates queries
+	// of similar shape.
+	//
+	// Edge case: df == 0 means the token has never been stored in any
+	// memory. That's even STRONGER evidence of SDR collapse — the user
+	// is asking about something we've never seen, but the SDR is
+	// confidently returning a memory anyway. Treat df==0 tokens as
+	// maximally rare (rarer than any indexed token).
+	rarest := distinctive[0]
+	for _, d := range distinctive[1:] {
+		// df==0 wins as "rarest" — unseen tokens are the strongest
+		// discriminator signal. If both are df==0, keep the first.
+		// Otherwise pick the lower df.
+		if d.df == 0 && rarest.df > 0 {
+			rarest = d
+			continue
+		}
+		if d.df > 0 && rarest.df > 0 && d.df < rarest.df {
+			rarest = d
+		}
+	}
+
+	// Is the discriminator present in the SDR's chosen context?
+	// Check both the raw form and the stem; the stored context may
+	// have either inflection ("france" vs "french" etc).
+	if strings.Contains(ctxLower, rarest.raw) {
+		return false
+	}
+	if rarest.stem != rarest.raw && strings.Contains(ctxLower, rarest.stem) {
+		return false
+	}
+	// Discriminator missing → SDR collapse detected.
+	// For df==0 tokens this is especially decisive: the user asked
+	// about something we've literally never indexed, yet the SDR
+	// returned a confident memory about something else. Veto hard.
+	return true
+}
+
+// learnQARecallPath performs only the writes that are required for
+// future Process() calls to recall this Q/A pair: Brain.Learn (vocab
+// expansion), Wernicke.LearnContext (co-occurrence + SDR shaping), and
+// Hippocampus.Store (the actual indexed memory). Returns false if the
+// input was empty (matching the original LearnQA early-out).
+//
+// Extracted from LearnQA on 2026-05-26 so that LearnQAFast can reuse
+// the exact same wiring without duplicating logic. The SDR encoding
+// path here (Wernicke.Understand → Combined, fallback to
+// Encoder.EncodeSentence on empty) is the same shape Process() builds
+// at inference time — keep them in sync or RecallScored will silently
+// stop matching freshly-written memories.
+func (o *Organism) learnQARecallPath(question, answer string) bool {
 	question = strings.TrimSpace(question)
 	answer = strings.TrimSpace(answer)
 	if question == "" || answer == "" {
-		return
+		return false
 	}
 
 	joined := strings.TrimSpace(question + " " + answer)
@@ -739,11 +1004,49 @@ func (o *Organism) LearnQA(question, answer string) {
 	o.Wernicke.LearnContext(Tokenize(answer))
 	o.Wernicke.LearnContext(Tokenize(joined))
 
-	questionSDR := o.Encoder.EncodeSentence(question)
+	// Use Wernicke.Understand to produce a question SDR shaped like
+	// the one Process() will later use as a recall key. Storing with
+	// the raw Encoder.EncodeSentence produced a different vector
+	// (Process unions Wernicke + Sensory + Attention output), which
+	// dropped SDR similarity well below the recall threshold and made
+	// freshly-learned Q/A pairs effectively invisible to RecallScored.
+	questionSDR := o.Wernicke.Understand(question).Combined
+	if questionSDR.ActiveCount == 0 {
+		// Fallback for very short or pre-vocab questions.
+		questionSDR = o.Encoder.EncodeSentence(question)
+	}
 	answerSDR := o.Encoder.EncodeSentence(answer)
 	// Store "Q | A" as context so the keyword index covers both.
 	context := question + " | " + answer
 	o.Hippocampus.Store(questionSDR, answerSDR, context)
+	return true
+}
+
+// LearnQAFast is a recall-only variant of LearnQA: it writes to
+// Brain + Wernicke + Hippocampus (everything Process() consults at
+// inference for factual recall) but skips the heavy neural training
+// in FractalCortex (~500M params, ~3.5s/pair) and RadioCortex
+// (~0.5s/pair). Use this for bulk corpus ingestion where you want
+// factual recall but cannot afford 4 seconds per fact.
+//
+// Trade-off: the transformer / fractal / radio paths will NOT have
+// been trained on these new facts. That's fine when your goal is to
+// fill Hippocampus for the recall-augmented generation path (which
+// is what Organism.Process uses as its primary route — fast-path
+// returns straight from Hippocampus when similarity >= threshold,
+// before the transformer is ever called).
+//
+// Introduced 2026-05-26 alongside the cortex-eval integration audit:
+// LearnQA's full pipeline made bulk ingest of 5k+ Dolly/Alpaca pairs
+// infeasible (~5.5h), while the recall pipeline alone runs in seconds.
+func (o *Organism) LearnQAFast(question, answer string) {
+	o.learnQARecallPath(question, answer)
+}
+
+func (o *Organism) LearnQA(question, answer string) {
+	if !o.learnQARecallPath(question, answer) {
+		return
+	}
 
 	// FractalCortex Autoregressive Training (STDP)
 	if o.FractalCortex != nil {
@@ -791,6 +1094,31 @@ func (o *Organism) LearnQA(question, answer string) {
 
 func sameText(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// truncStr truncates s to at most n runes, appending an ellipsis when
+// truncation actually occurred. Used by the optional recall-debug log
+// (gated on CORTEX_DEBUG_RECALL) to keep stderr lines readable.
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// recallDebugEnabled is read once per process; CORTEX_DEBUG_RECALL has
+// no useful effect mid-run and reading the env on every Process() call
+// dominated the cost of the hot path during instrumentation.
+var recallDebugEnabled = os.Getenv("CORTEX_DEBUG_RECALL") != ""
+
+// recallDebugf prints a recall-pipeline trace line to stderr when
+// CORTEX_DEBUG_RECALL was set at startup. No-op otherwise; safe to
+// leave sprinkled through Process().
+func recallDebugf(format string, args ...any) {
+	if !recallDebugEnabled {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[recall] "+format+"\n", args...)
 }
 
 // isRepetitive detects degenerate output like "brain brain brain brain...".
@@ -1553,6 +1881,21 @@ func LoadOrganism(cfg Config, rng *rand.Rand) (*Organism, error) {
 		InteractionCount: interactionCount,
 		Rng:              rng,
 	}
+
+	// Wire the pluggable Tool registry into Reasoning (mirrors NewOrganism:202-208).
+	// Without this, a freshly LOADED organism has an empty registry — and
+	// DateTimeTool, UnitConvertTool, MathSquareRootTool, MathPowerTool,
+	// HippoSearchTool become silent-dead until the process is restarted with
+	// NewOrganism. Audit 2026-05-26 caught this gap: cursa D ran the entire
+	// pipeline without these tools because broca-eval / cortex-eval always
+	// hit the Load path. Fix is identical to the NewOrganism wiring.
+	loadedTools := NewToolRegistry()
+	loadedTools.Register(DateTimeTool{})
+	loadedTools.Register(UnitConvertTool{})
+	loadedTools.Register(MathSquareRootTool{})
+	loadedTools.Register(MathPowerTool{})
+	loadedTools.Register(NewHippoSearchTool(o.Hippocampus, o.Wernicke, o.Brain))
+	o.Reasoning.AttachTools(loadedTools)
 
 	return o, nil
 }

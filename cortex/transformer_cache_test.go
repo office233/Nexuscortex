@@ -93,3 +93,109 @@ func TestGenerateFastNotSlower(t *testing.T) {
 		t.Fatalf("GenerateFast unexpectedly slow: %v vs %v", fast, slow)
 	}
 }
+
+// TestGenerateFastMinEquivalentToGenerateFast verifies that calling
+// GenerateFastMin with minNewTokens=0 produces identical output to
+// GenerateFast — the no-suppression path must be a pure pass-through.
+// This protects against accidental behavioural drift when adding the
+// new suppression code.
+func TestGenerateFastMinEquivalentToGenerateFast(t *testing.T) {
+	cfg := TransformerConfig{
+		VocabSize:  64,
+		EmbedDim:   16,
+		NumHeads:   2,
+		NumLayers:  2,
+		FFNDim:     32,
+		MaxSeqLen:  32,
+		EOSTokenID: 7, // arbitrary in-vocab EOS for the test
+	}
+
+	rng := rand.New(rand.NewSource(7))
+	m := NewMiniTransformer(cfg, rng)
+
+	prompt := []int{1, 5, 9, 13}
+	maxNew := 8
+
+	m.Rng = rand.New(rand.NewSource(42))
+	noMin := m.GenerateFast(prompt, maxNew, 0.5, 5)
+
+	m.Rng = rand.New(rand.NewSource(42))
+	minZero := m.GenerateFastMin(prompt, maxNew, 0, 0.5, 5)
+
+	if len(noMin) != len(minZero) {
+		t.Fatalf("length mismatch: GenerateFast=%d GenerateFastMin(0)=%d",
+			len(noMin), len(minZero))
+	}
+	for i := range noMin {
+		if noMin[i] != minZero[i] {
+			t.Fatalf("token mismatch at %d: GenerateFast=%d GenerateFastMin(0)=%d",
+				i, noMin[i], minZero[i])
+		}
+	}
+}
+
+// TestGenerateFastMinSuppressesEOS verifies that with minNewTokens > 0
+// the EOS token is never emitted as one of the first minNewTokens
+// generated tokens. Strategy: construct a tiny model and force EOS to
+// be the most likely token by biasing the embeddings post-construction
+// — then assert that with greedy sampling (top-k=1) we still get
+// non-EOS tokens for the first minNewTokens positions.
+//
+// Simpler approach used here: rely on the fact that with a fixed RNG
+// seed and top-k=vocab_size, a random model will sometimes produce
+// EOS in the first few tokens. We just assert that with min=N, the
+// emitted prefix never contains EOS at positions 0..N-1.
+func TestGenerateFastMinSuppressesEOS(t *testing.T) {
+	const eosID = 7
+	cfg := TransformerConfig{
+		VocabSize:  16,
+		EmbedDim:   8,
+		NumHeads:   2,
+		NumLayers:  1,
+		FFNDim:     16,
+		MaxSeqLen:  32,
+		EOSTokenID: eosID,
+	}
+
+	// Try many seeds; if no seed produces EOS in first 3 tokens with
+	// min=0, the test is inconclusive (skip). Otherwise assert that
+	// min=3 always avoids EOS in first 3 positions.
+	prompt := []int{1, 2, 3}
+	const maxNew = 6
+	const minSuppress = 3
+
+	foundEOSCase := false
+	for seed := int64(0); seed < 50; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		m := NewMiniTransformer(cfg, rng)
+
+		m.Rng = rand.New(rand.NewSource(seed * 31))
+		noMin := m.GenerateFastMin(prompt, maxNew, 0, 1.0, cfg.VocabSize)
+		newTokens := noMin[len(prompt):]
+		hasEarlyEOS := false
+		for i := 0; i < minSuppress && i < len(newTokens); i++ {
+			if newTokens[i] == eosID {
+				hasEarlyEOS = true
+				break
+			}
+		}
+		if !hasEarlyEOS {
+			continue
+		}
+		foundEOSCase = true
+
+		// Now run with suppression and assert no EOS in first minSuppress.
+		m.Rng = rand.New(rand.NewSource(seed * 31))
+		withMin := m.GenerateFastMin(prompt, maxNew, minSuppress, 1.0, cfg.VocabSize)
+		newWith := withMin[len(prompt):]
+		for i := 0; i < minSuppress && i < len(newWith); i++ {
+			if newWith[i] == eosID {
+				t.Fatalf("seed=%d: EOS emitted at position %d despite min=%d suppression: %v",
+					seed, i, minSuppress, newWith)
+			}
+		}
+	}
+	if !foundEOSCase {
+		t.Skip("could not find a seed where un-suppressed generation emits EOS early; test inconclusive but suppression code path untested")
+	}
+}

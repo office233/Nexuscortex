@@ -218,3 +218,170 @@ func TestOrganismSuppressesLowConfidenceUnknownResponse(t *testing.T) {
 		t.Fatalf("expected unknown prompt to produce low-confidence fallback, got %q", response)
 	}
 }
+
+// TestOrganismSDRCollisionDoesNotReturnWrongTopic guards against the
+// "capital of France returns Berlin" bug discovered 2026-05-26 via the
+// cortex-eval harness.
+//
+// The bug: Wernicke's union-encoded SDR collapses structurally similar
+// questions ("What is the capital of X?") to near-identical vectors.
+// The original SDR fast-path (organism.go ~line 401) returned the
+// highest-similarity stored memory at sim>=200 WITHOUT verifying that
+// the chosen memory was about the actual topic of the query. Result:
+// "What is the capital of France?" would hit the stored "What is the
+// capital of Germany? | ... Berlin" memory with sim=255 (because the
+// distinguishing token "france" vs "germany" contributes only a few
+// bits to the union SDR) and confidently return "Berlin".
+//
+// The fix is fastPathKeywordVeto: if the RAREST distinctive (non-
+// stopword) token from the query is absent from the chosen memory's
+// context, the fast-path is skipped and the keyword path (which CAN
+// distinguish on rare tokens) gets a turn.
+//
+// This test wires up three structurally identical Q/A pairs about
+// capitals and verifies that querying for each one returns the right
+// city, not whichever one happens to have the highest union-SDR
+// overlap.
+func TestOrganismSDRCollisionDoesNotReturnWrongTopic(t *testing.T) {
+	tempDir := t.TempDir()
+	rng := rand.New(rand.NewSource(42))
+	cfg := DefaultConfig()
+	cfg.DataDir = tempDir
+	cfg.NoSave = true
+
+	org := NewOrganism(cfg, rng)
+	org.FractalCortex = nil // isolate the Hippocampus recall path
+
+	// Seed the three structurally-identical Q/A pairs that collided in
+	// the original bug. Order matters slightly: Germany is learned
+	// first because in the original repro it was the "loudest" memory
+	// in the union SDR and won the fast-path tie.
+	// Bypass the reconsolidation-collapse bug: with default
+	// ReconsolidationThresh, Wernicke produces SDRs so similar across
+	// these three structurally-identical questions that Hippocampus
+	// considers them the same memory and merges them. Raise the
+	// reconsolidation threshold to its maximum so each Store creates
+	// a distinct memory and the test can exercise the SDR-collapse
+	// fingerprint detector specifically (which is the bug this test
+	// is for). The underlying reconsolidation-collapse bug is tracked
+	// separately by TestOrganismWernickeReconsolidationCollapse.
+	org.Hippocampus.ReconsolidationThresh = 255
+
+	org.LearnQAFast("What is the capital of Germany?", "The capital of Germany is Berlin.")
+	org.LearnQAFast("What is the capital of France?", "Paris is the capital of France.")
+	org.LearnQAFast("What is the capital of Japan?", "Tokyo is the capital of Japan.")
+	if got := org.Hippocampus.Size(); got != 3 {
+		t.Fatalf("setup invariant violated: expected 3 distinct memories, got %d", got)
+	}
+
+	cases := []struct {
+		query    string
+		mustHave string // substring expected in the response
+		mustNot  string // substring that would prove collision
+	}{
+		{"What is the capital of France?", "Paris", "Berlin"},
+		{"What is the capital of Japan?", "Tokyo", "Berlin"},
+		{"What is the capital of Germany?", "Berlin", "Paris"},
+	}
+
+	for _, c := range cases {
+		got := org.Process(c.query)
+		if !strings.Contains(strings.ToLower(got), strings.ToLower(c.mustHave)) {
+			t.Errorf("query %q: expected response to contain %q, got %q",
+				c.query, c.mustHave, got)
+		}
+		if strings.Contains(strings.ToLower(got), strings.ToLower(c.mustNot)) {
+			t.Errorf("query %q: response contains collision token %q (full response: %q)",
+				c.query, c.mustNot, got)
+		}
+	}
+}
+
+// TestOrganismFastPathStillFiresForUniqueTopics is the companion to
+// TestOrganismSDRCollisionDoesNotReturnWrongTopic. It ensures the
+// fastPathKeywordVeto did not become so aggressive that it blocks the
+// SDR fast-path on legitimate queries where the SDR match is the
+// genuinely best memory and shares topic vocabulary with the query.
+//
+// Specifically: when the SDR's chosen memory contains the rarest
+// distinctive token from the query, the veto must NOT fire (otherwise
+// we'd regress queries like "Who developed the theory of relativity?"
+// → "Einstein" which the eval harness caught when the veto was set
+// too conservatively in fix v2).
+func TestOrganismFastPathStillFiresForUniqueTopics(t *testing.T) {
+	tempDir := t.TempDir()
+	rng := rand.New(rand.NewSource(42))
+	cfg := DefaultConfig()
+	cfg.DataDir = tempDir
+	cfg.NoSave = true
+
+	org := NewOrganism(cfg, rng)
+	org.FractalCortex = nil
+
+	// Learn three unrelated facts. The rare token ("photosynthesis",
+	// "relativity", "polonium") appears in both the question and the
+	// stored answer, so the veto must NOT fire for these.
+	org.LearnQAFast("What is photosynthesis?", "Photosynthesis is how plants use sunlight to make food.")
+	org.LearnQAFast("Who developed the theory of relativity?", "Albert Einstein developed the theory of relativity.")
+	org.LearnQAFast("Who discovered polonium?", "Marie Curie discovered polonium.")
+
+	cases := []struct {
+		query    string
+		mustHave string
+	}{
+		{"What is photosynthesis?", "plant"},
+		{"Who developed the theory of relativity?", "Einstein"},
+		{"Who discovered polonium?", "Curie"},
+	}
+
+	for _, c := range cases {
+		got := org.Process(c.query)
+		if !strings.Contains(strings.ToLower(got), strings.ToLower(c.mustHave)) {
+			t.Errorf("query %q: expected response to contain %q (fast-path veto too aggressive?), got %q",
+				c.query, c.mustHave, got)
+		}
+	}
+}
+
+// TestOrganismWernickeReconsolidationCollapse documents (rather than
+// gates on) a SECOND failure mode discovered during the SDR-collision
+// investigation on 2026-05-26.
+//
+// When three structurally-identical Q/A pairs ("What is the capital
+// of X?") are learned back-to-back into a fresh organism using the
+// DEFAULT reconsolidation threshold, Wernicke produces question SDRs
+// so similar that Hippocampus.Store treats every new memory as a
+// reconsolidation of the first one and overwrites it. Result: 3
+// LearnQAFast calls produce 1 stored memory (the last one), and the
+// first two facts are effectively lost.
+//
+// In the cortex-eval audit this didn't surface because the eval
+// corpus was loaded over many sessions with intervening other-topic
+// learning, so the Wernicke vocabulary had already diverged enough
+// that the SDRs were distinguishable at Store time. But the bug is
+// real and will bite anyone bulk-loading similar Q/A pairs.
+//
+// This test runs in t.Skip mode for now — it's a known-broken
+// canary, not a gate. Remove the Skip when the underlying Wernicke
+// encoding is fixed (e.g. by increasing distinctive-token weight or
+// adding rare-token boosting to the union-SDR construction).
+func TestOrganismWernickeReconsolidationCollapse(t *testing.T) {
+	t.Skip("known issue: Wernicke SDR collapse causes reconsolidation merge on structurally-identical Q/A pairs; tracked for follow-up")
+
+	tempDir := t.TempDir()
+	rng := rand.New(rand.NewSource(42))
+	cfg := DefaultConfig()
+	cfg.DataDir = tempDir
+	cfg.NoSave = true
+
+	org := NewOrganism(cfg, rng)
+	org.FractalCortex = nil
+
+	org.LearnQAFast("What is the capital of Germany?", "The capital of Germany is Berlin.")
+	org.LearnQAFast("What is the capital of France?", "Paris is the capital of France.")
+	org.LearnQAFast("What is the capital of Japan?", "Tokyo is the capital of Japan.")
+
+	if got := org.Hippocampus.Size(); got != 3 {
+		t.Errorf("Wernicke SDR collapse: expected 3 distinct memories after 3 Q/A learns, got %d (memories were reconsolidated into one)", got)
+	}
+}

@@ -141,9 +141,26 @@ type TernaryLayer struct {
 	Tiles       []TernaryTile // [OutputSize * TilesPerRow] tiles
 	Bias        []int16       // [OutputSize] bias per output neuron (optional)
 
+	// PRNGState seed-uiește xorshift-ul folosit de UpdateProbabilisticSTDP.
+	// Setat din cfg.Seed pentru reproductibilitate. Niciodata 0 (PRNG-ul nu
+	// poate avansa din 0); valoarea 0 înseamnă "uninitialized" și e tratată
+	// ca seed=1 la prima utilizare.
+	PRNGState uint64 `json:"prng_state,omitempty"`
+
 	// Engine is an optional hardware accelerator (e.g., GPU/WebGPU).
 	// If set, ForwardSparse is offloaded to the engine.
 	Engine interface{} `json:"-"`
+}
+
+// SeedPRNG inițializează state-ul xorshift folosit de antrenarea STDP.
+// Apelat o singură dată după construire, cu cfg.Seed (sau orice valoare
+// reproductibilă). Garantează state != 0.
+func (l *TernaryLayer) SeedPRNG(seed int64) {
+	s := uint64(seed)
+	if s == 0 {
+		s = 1
+	}
+	l.PRNGState = s
 }
 
 // NewTernaryLayer creates a new ternary layer with zero-initialized weights.

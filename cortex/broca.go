@@ -154,9 +154,12 @@ func (b *Broca) Generate(inputSDR SDR, maxWords int) string {
 	}
 
 	// Find the top candidate words matching this pattern.
+	// Sursă unică: Config.BrocaDecodeTopK (default 50 prin DefaultConfig).
+	// Fallback-ul folosește DefaultConfig în loc de constantă duplicată ca
+	// să evităm drift dacă defaults se schimbă.
 	topK := b.Brain.Config.BrocaDecodeTopK
 	if topK <= 0 {
-		topK = 50
+		topK = DefaultConfig().BrocaDecodeTopK
 	}
 	candidates := b.Decoder.DecodeTopK(pattern, sdrSize, topK)
 	if len(candidates) == 0 {
@@ -346,7 +349,7 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 		if len(topK) == 0 {
 			break
 		}
-		
+
 		// Pick the best word that isn't a loop
 		var nextWord string
 		for _, cand := range topK {
@@ -377,7 +380,7 @@ func (b *Broca) GenerateAutoregressive(fc *FractalCortex, contextWords []string,
 		generated = append(generated, nextWord)
 		recentWords[nextWord]++
 		lastWord = nextWord
-		
+
 		// Stop condition: end of sentence
 		if isPunctuation(nextWord) {
 			break
@@ -468,4 +471,3 @@ func (b *Broca) GenerateWithTransformer(
 
 	return text
 }
-

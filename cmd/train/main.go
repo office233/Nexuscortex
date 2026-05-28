@@ -57,7 +57,8 @@ func loadTexts(path string) ([]string, error) {
 
 func main() {
 	// CLI flags
-	dataDir := flag.String("data-dir", "./data/cortex-training", "Data directory for saving the organism")
+	configPath := flag.String("config", "", "Path to JSON config file (overrides DefaultConfig)")
+	dataDir := flag.String("data-dir", "", "Data directory (overrides config; default ./data/cortex-training)")
 	radioEnabled := flag.Bool("radio-cortex-enabled", true, "Enable RadioCortex")
 	neuroRadioEnabled := flag.Bool("neuro-radio-enabled", true, "Enable NeuroRadioCortex")
 	qaEpochs := flag.Int("epochs", 3, "Number of Q&A training epochs")
@@ -70,9 +71,25 @@ func main() {
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	cfg := cortex.DefaultConfig()
-	cfg.DataDir = *dataDir
+	cfg, configSource, err := cortex.MustLoadConfigWithDefaults(*configPath)
+	if err != nil {
+		fmt.Printf("  ❌ Config error: %v\n", err)
+		return
+	}
+	if configSource != "" {
+		fmt.Printf("  📋 Config loaded from: %s\n", configSource)
+	}
+	// Fallback la path-ul tradițional al acestui binar dacă nici flag,
+	// nici JSON nu specifică DataDir. Păstrăm comportamentul existent.
+	if *dataDir != "" {
+		cfg.DataDir = *dataDir
+	} else if cfg.DataDir == "" || cfg.DataDir == "./data/cortex" {
+		cfg.DataDir = "./data/cortex-training"
+	}
+	// Reproductibilitate: folosim cfg.Seed (nu time.Now), conform claim-ului
+	// "deterministic seed" din README. Pentru sesiuni non-deterministe,
+	// utilizatorul poate seta cfg.Seed = time.Now().UnixNano() explicit.
+	rng := rand.New(rand.NewSource(cfg.Seed))
 	cfg.RadioCortexEnabled = *radioEnabled
 	cfg.NeuroRadioEnabled = *neuroRadioEnabled
 

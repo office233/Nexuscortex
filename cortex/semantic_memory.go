@@ -102,30 +102,64 @@ func (sm *SemanticMemory) Generalize(hip *Hippocampus) {
 
 		if bestConceptIdx != -1 {
 			c := &sm.Concepts[bestConceptIdx]
-			// WEIGHTED MERGE instead of pure intersection:
-			// 1. Keep all existing prototype bits (don't shrink!)
-			// 2. Selectively reinforce bits that are in BOTH prototype AND episode
-			//    by leaving them as-is (they're already set)
-			// 3. Add NEW bits from the episode that aren't in the prototype yet,
-			//    but only if the concept is young (Count < 10) — this allows
-			//    concepts to grow during early formation.
+			// CONFIDENCE-WEIGHTED MERGE (fix pentru bug-ul de identitate
+			// matematică documentat în HARDCODING_AND_LIMITATIONS.md §8.1):
 			//
-			// OLD (broken): c.Prototype = c.Prototype.Intersect(m.Input)
-			//   → This caused concepts to lose bits monotonically until they
-			//     became too sparse to match anything.
+			// Istoric:
+			//   v1 (broken): c.Prototype = Prototype ∩ Input
+			//                → Prototype ∪ (Prototype ∩ Input) ≡ Prototype
+			//                  matematic identitate: conceptul nu învață NICI
+			//                  un bit nou; în plus, șterge bit-uri istorice
+			//                  pe care episodul nu le are → SDR-uri vide.
+			//   v2 (overcorrected): c.Prototype = Prototype ∪ Input
+			//                → Conceptul tânăr absoarbe ORICE bit din orice
+			//                  episod peste prag → prototype gonflat cu zgomot.
+			//                  Densitate crește necontrolat (până la ~ActiveCount
+			//                  total al SDR-ului), distrugând discriminarea.
 			//
-			// NEW: Merge new evidence into the prototype (union of episode bits
-			// for young concepts to absorb novel information).
+			// v3 (acum): merge stratificat în funcție de încredere.
+			//   - Bit-uri în AMBELE (intersect) → reinforcement, păstrate.
+			//   - Bit-uri doar în prototip → păstrate (decay lent biologic;
+			//     neocortexul nu uită brusc ce a învățat odată).
+			//   - Bit-uri doar în episod → ABSORBITE NUMAI dacă:
+			//       (a) conceptul e tânăr (Count < maturityThresh) ȘI
+			//       (b) similaritatea episode↔prototype e high-confidence
+			//           (cu un buffer peste pragul de merge minim).
+			//     Altfel sunt ignorate ca zgomot.
+			//   - Concepte mature: prototype-ul este IMUTABIL, episodul doar
+			//     incrementează Count (validare statistică, nu modificare).
+			//
+			// Acest design garantează:
+			//   - Conceptele POT crește (învață noi invarianți) — fix v1.
+			//   - Conceptele NU pot crește necontrolat — fix v2.
+			//   - Conceptele mature converg la prototip stabil — biologic.
 			maturityThresh := sm.Config.SemanticMemoryConceptMaturity
 			if maturityThresh <= 0 {
 				maturityThresh = 10
 			}
 			if c.Count < maturityThresh {
-				// Young concept: absorb novel bits from episode to grow the prototype
-				c.Prototype = c.Prototype.Union(m.Input)
+				// Buffer de încredere peste pragul minim de merge. Doar
+				// episoadele cu similaritate notabil peste prag (nu doar
+				// "abia trec") au voie să adauge bit-uri noi în prototip.
+				// 0.5 * (255 - simThreshold) e centrul intervalului dintre
+				// pragul minim și matchul perfect.
+				confidenceBuffer := uint8((255 - uint16(simThreshold)) / 2)
+				highConfidenceThresh := simThreshold
+				if uint16(simThreshold)+uint16(confidenceBuffer) < 255 {
+					highConfidenceThresh = simThreshold + confidenceBuffer
+				}
+				if bestSim >= highConfidenceThresh {
+					// High-confidence match: absorbim bit-uri noi (creștere
+					// controlată a prototipului).
+					c.Prototype = c.Prototype.Union(m.Input)
+				}
+				// Moderate-confidence match (simThreshold <= sim < highConf):
+				// validăm conceptul (Count++ mai jos) dar NU atingem prototype.
+				// Bit-urile prototype existente rămân; bit-urile zgomotoase
+				// din episod sunt respinse.
 			}
-			// For mature concepts (Count >= maturityThresh), the prototype stays as-is.
-			// The episode validates the concept but doesn't modify it.
+			// Pentru concepte mature (Count >= maturityThresh): prototype
+			// imutabil. Doar Count++ ca validare statistică.
 			c.Count++
 
 			// Append context if it's unique.

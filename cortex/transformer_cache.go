@@ -250,7 +250,25 @@ func (m *MiniTransformer) logitsFromHidden(hidden *Tensor) []float32 {
 // same sampling behaviour, just O(N) per emitted token instead of
 // O(N^2). Safe to use anywhere Generate was used; falls back to the
 // classical path if the prompt is empty.
+//
+// Thin wrapper around GenerateFastMin with minNewTokens=0 (no EOS
+// suppression). See GenerateFastMin for the variant that forces a
+// minimum generation length — useful when the model has learned to
+// emit EOS too early after short prompts (vezi
+// docs/plans/2026-05-26-eos-degeneration.md).
 func (m *MiniTransformer) GenerateFast(prompt []int, maxNewTokens int, temperature float32, topK int) []int {
+	return m.GenerateFastMin(prompt, maxNewTokens, 0, temperature, topK)
+}
+
+// GenerateFastMin is like GenerateFast but suppresses the EOS token for
+// the first minNewTokens emitted tokens. After that the EOS token can
+// terminate generation normally. If minNewTokens <= 0 the behaviour is
+// identical to GenerateFast.
+//
+// Suppression is done by setting logits[EOSTokenID] = -Inf BEFORE
+// top-K filtering, so EOS cannot be in the top-K candidate set during
+// the suppression window.
+func (m *MiniTransformer) GenerateFastMin(prompt []int, maxNewTokens, minNewTokens int, temperature float32, topK int) []int {
 	if len(prompt) == 0 {
 		return prompt
 	}
@@ -278,6 +296,8 @@ func (m *MiniTransformer) GenerateFast(prompt []int, maxNewTokens int, temperatu
 	generated := make([]int, len(prompt), len(prompt)+maxNewTokens)
 	copy(generated, prompt)
 
+	eosID := m.Config.EOSTokenID
+
 	for i := 0; i < maxNewTokens; i++ {
 		// Sample next token from current logits.
 		logits := m.logitsFromHidden(lastHidden)
@@ -287,11 +307,18 @@ func (m *MiniTransformer) GenerateFast(prompt []int, maxNewTokens int, temperatu
 		for j := range logits {
 			logits[j] /= temperature
 		}
+
+		// EOS suppression for first minNewTokens emitted tokens.
+		// i is the 0-based index of the token we're about to emit.
+		if i < minNewTokens && eosID >= 0 && eosID < len(logits) {
+			logits[eosID] = float32(math.Inf(-1))
+		}
+
 		next := topKSample(logits, topK, m.Rng)
 		generated = append(generated, next)
 
-		// EOS short-circuit.
-		if next == m.Config.EOSTokenID {
+		// EOS short-circuit (only triggers after suppression window).
+		if next == eosID {
 			break
 		}
 

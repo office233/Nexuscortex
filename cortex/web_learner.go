@@ -59,25 +59,29 @@ func NewWebLearnerFromConfig(cfg Config) *WebLearner {
 	if rateLimit <= 0 {
 		rateLimit = 2 * time.Second
 	}
+	// Toate fallback-urile de mai jos folosesc DefaultConfig() ca sursă unică
+	// de adevăr. Înainte erau string-literal duplicate care puteau drift-ui
+	// față de cortex/config.go (vezi raport audit, problemele 5.6-5.8).
+	defaults := DefaultConfig()
 	bodyLimitMB := cfg.WebLearnerBodyLimitMB
 	if bodyLimitMB <= 0 {
-		bodyLimitMB = 5
+		bodyLimitMB = defaults.WebLearnerBodyLimitMB
 	}
 	userAgent := cfg.WebLearnerUserAgent
 	if userAgent == "" {
-		userAgent = "NexusCortex/1.0 (autonomous learner)"
+		userAgent = defaults.WebLearnerUserAgent
 	}
 	wikiBase := cfg.WebLearnerWikiBaseURL
 	if wikiBase == "" {
-		wikiBase = "wikipedia.org"
+		wikiBase = defaults.WebLearnerWikiBaseURL
 	}
 	hfSearch := cfg.WebLearnerHFSearchURL
 	if hfSearch == "" {
-		hfSearch = "https://huggingface.co/api/datasets"
+		hfSearch = defaults.WebLearnerHFSearchURL
 	}
 	hfRows := cfg.WebLearnerHFRowsURL
 	if hfRows == "" {
-		hfRows = "https://datasets-server.huggingface.co/rows"
+		hfRows = defaults.WebLearnerHFRowsURL
 	}
 
 	allowedDomains := cfg.WebLearnerAllowedDomains
@@ -307,33 +311,61 @@ func (wl *WebLearner) LearnFromResults(org *Organism, results []SearchResult) in
 			continue
 		}
 
-		// Learn the title as a fact
+		// 1. Single canonical Q→A via LearnQA. This is the expensive
+		//    path (Brain + Wernicke + Hippocampus + FractalCortex STDP
+		//    + per-answer-token RadioCortex training), so we only run
+		//    it once per result. Calling it for multiple paraphrases
+		//    multiplies cost by N on a body of hundreds of tokens.
 		if r.Title != "" {
 			org.LearnQA("What is "+r.Title+"?", text)
 			learned++
+
+			// 2. Light-weight extra recall paths: store the same answer
+			//    in the hippocampus under several question SDRs (and the
+			//    bare title), without re-running STDP / RadioCortex. This
+			//    is what gives the SDR-similarity path a chance against
+			//    older generic memories that happen to share "what is".
+			answerSDR := org.Encoder.EncodeSentence(text)
+			for _, q := range extraRecallCues(r.Title) {
+				qSDR := org.Encoder.EncodeSentence(q)
+				org.Hippocampus.Store(qSDR, answerSDR, q+" | "+text)
+				learned++
+			}
 		}
 
-		// Learn the full text passively
+		// 3. Passive language learning: feed the body through Brain /
+		//    Wernicke so word-association and n-gram statistics catch
+		//    up with the new vocabulary.
 		org.Brain.Learn(text)
-		tokens := Tokenize(text)
-		org.Wernicke.LearnContext(tokens)
+		org.Wernicke.LearnContext(Tokenize(text))
 
-		// Store as episodic memory
-		sdr := org.Encoder.EncodeSentence(text)
-		org.Hippocampus.Store(sdr, sdr, text)
-
-		learned++
-		wl.TotalLearned++
+		wl.TotalLearned += learned
 	}
 	wl.TotalFacts += learned
 	return learned
 }
 
+// extraRecallCues returns light-weight question shapes used as
+// additional Hippocampus index entries. These DO NOT trigger STDP or
+// RadioCortex training (LearnQA handles that once); they only widen
+// the SDR-similarity and keyword surface so a freshly-learned topic
+// outranks older generic memories at recall time. Bilingual coverage
+// (EN + RO) matches AutoSearchLangs defaults.
+func extraRecallCues(title string) []string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return nil
+	}
+	return []string{
+		t,                    // bare topic — "Saturn"
+		"Tell me about " + t, // longer English phrasing
+		"Ce este " + t + "?", // Romanian phrasing
+	}
+}
+
 // -----------------------------------------------------------------------------
 // HuggingFace Datasets API integration
 // -----------------------------------------------------------------------------
-
-
 
 // SearchHuggingFace searches the HuggingFace Datasets API for datasets
 // matching the query. Returns up to maxResults results with dataset

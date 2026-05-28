@@ -51,10 +51,12 @@ func generateRandomToken() string {
 }
 
 func main() {
-	// Default values come from Config so they're centralized
+	// Default values come from Config so they're centralized.
+	// Operatorul poate suprascrie selectiv prin -config <file>.json.
 	defaultCfg := cortex.DefaultConfig()
 
 	// ── Command Line Flags ───────────────────────────────────────────
+	configPath := flag.String("config", "", "Path to JSON config file (overrides DefaultConfig)")
 	port := flag.String("port", defaultCfg.WebPort, "Port to bind the HTTP server to")
 	bindAddr := flag.String("bind", defaultCfg.WebBindAddr, "Address to bind the HTTP server to")
 	openBrowser := flag.Bool("open", true, "Auto-open the dashboard in the default browser")
@@ -65,8 +67,16 @@ func main() {
 	authToken := flag.String("token", "", "Security token for dashboard authentication (empty to auto-generate, 'none' to disable)")
 	flag.Parse()
 
-	// Construct Organism configuration
-	cfg := defaultCfg
+	// Construct Organism configuration: JSON config (dacă există) merge-uit
+	// peste DefaultConfig, apoi flag-urile CLI au precedență finală.
+	cfg, configSource, err := cortex.MustLoadConfigWithDefaults(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+	if configSource != "" {
+		fmt.Printf("  📋 Config loaded from: %s\n", configSource)
+	}
 	cfg.DataDir = *dataDir
 	cfg.Fresh = *fresh
 	cfg.NoSave = *noSave
@@ -104,7 +114,8 @@ func main() {
 	// ── Boot or Load the Organism ─────────────────────────────────────
 	fmt.Printf("  🔬 Introspecting data directory: %s...\n", cfg.DataDir)
 	var org *cortex.Organism
-	var err error
+	// `err` declarat anterior (din LoadConfig); reutilizăm.
+	err = nil
 	if !cfg.Fresh {
 		org, err = cortex.LoadOrganism(cfg, rng)
 	}

@@ -112,23 +112,39 @@ func printStats(s cortex.OrganismStats) {
 
 func main() {
 	// ── CLI flags ───────────────────────────────────────────────────
-	dataDir := flag.String("data-dir", "./data/cortex", "Path to organism data directory")
+	// -config permite încărcarea unui JSON cu suprascrieri peste
+	// DefaultConfig. Vezi cortex/config_loader.go pentru precedență
+	// (flag > NEXUS_CORTEX_CONFIG env > nexus-cortex.json / config.json).
+	configPath := flag.String("config", "", "Path to JSON config file (overrides DefaultConfig)")
+	dataDir := flag.String("data-dir", "", "Path to organism data directory (overrides config)")
 	interactive := flag.Bool("i", false, "Enter interactive mode after demo")
 	fresh := flag.Bool("fresh", false, "Start with a new organism (ignore saved state)")
 	noSave := flag.Bool("no-save", false, "Don't auto-save after demo")
-	seed := flag.Int64("seed", 42, "Random seed for deterministic runs")
+	seed := flag.Int64("seed", 0, "Random seed (0 = use config value)")
 	demo := flag.Bool("demo", true, "Run learning and interaction demo phases")
 	demoFile := flag.String("demo-file", "./data/demo/default.json", "Path to external demo scenario JSON")
 	flag.Parse()
 
 	banner()
 
-	// Build unified config from flags and defaults
-	cfg := cortex.DefaultConfig()
-	cfg.DataDir = *dataDir
+	// Build unified config from flags and defaults.
+	// Ordinea de precedență: flags CLI > JSON config > DefaultConfig.
+	cfg, configSource, err := cortex.MustLoadConfigWithDefaults(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+	if configSource != "" {
+		fmt.Printf("  📋 Config loaded from: %s\n", configSource)
+	}
+	if *dataDir != "" {
+		cfg.DataDir = *dataDir
+	}
 	cfg.Fresh = *fresh
 	cfg.NoSave = *noSave
-	cfg.Seed = *seed
+	if *seed != 0 {
+		cfg.Seed = *seed
+	}
 	cfg.Demo = *demo
 
 	// Deterministic RNG for reproducible results.
@@ -137,7 +153,8 @@ func main() {
 	// ── Create or restore the Organism ──────────────────────────────
 	fmt.Printf("  🔬 Initializing Organism (data dir: %s)...\n", cfg.DataDir)
 	var org *cortex.Organism
-	var err error
+	// `err` este deja declarat mai sus (din LoadConfig); reutilizăm.
+	err = nil
 	if !cfg.Fresh {
 		org, err = cortex.LoadOrganism(cfg, rng)
 	}

@@ -291,6 +291,21 @@ type Config struct {
 	TransformerFFNDim    int `json:"transformer_ffn_dim"`     // FFN inner dimension (default 1024)
 	TransformerMaxSeqLen int `json:"transformer_max_seq_len"` // Max sequence length (default 512)
 
+	// Adam optimizer hyperparameters. Sursa unică pentru DefaultAdamConfig
+	// din transformer_optimizer.go. Modificabile fără recompilare prin
+	// fișier JSON (vezi LoadConfig).
+	AdamBeta1       float32 `json:"adam_beta1"`         // 1st-moment decay (default 0.9)
+	AdamBeta2       float32 `json:"adam_beta2"`         // 2nd-moment decay (default 0.999)
+	AdamEpsilon     float32 `json:"adam_epsilon"`       // Numerical stability (default 1e-8)
+	AdamMaxGradNorm float32 `json:"adam_max_grad_norm"` // Global L2 grad clip (default 1.0; <=0 disables)
+
+	// Chain-of-Thought / Self-Consistency (opt-in, free quality boost
+	// on top of Broca 2.0 with no retraining).
+	CoTEnabled         bool    `json:"cot_enabled"`          // Enable CoT primer + Self-Consistency in Broca path
+	CoTSamples         int     `json:"cot_samples"`          // Independent samples to vote on (1 = disabled, 3-5 sweet spot)
+	CoTBaseTemperature float32 `json:"cot_base_temperature"` // Centre temperature for sample spread (default 0.8)
+	CoTUsePrimer       bool    `json:"cot_use_primer"`       // Prepend "let's think step by step" primer
+
 	// Semantic Memory configuration
 	SemanticMemorySimThreshold uint8 `json:"semantic_memory_sim_threshold"` // Similarity threshold for concept match (default 80)
 
@@ -613,6 +628,21 @@ func DefaultConfig() Config {
 		TransformerNumLayers: 4,
 		TransformerFFNDim:    1024,
 		TransformerMaxSeqLen: 512,
+
+		// Adam optimizer defaults (sensible pentru small transformers).
+		// Pot fi suprascrise prin JSON config sau prin AdamConfig direct.
+		AdamBeta1:       0.9,
+		AdamBeta2:       0.999,
+		AdamEpsilon:     1e-8,
+		AdamMaxGradNorm: 1.0,
+
+		// Chain-of-Thought / Self-Consistency defaults — opt-in, off
+		// by default to keep current behaviour identical until the
+		// operator explicitly turns it on.
+		CoTEnabled:         false,
+		CoTSamples:         3,
+		CoTBaseTemperature: 0.8,
+		CoTUsePrimer:       true,
 
 		// Semantic Memory defaults
 		SemanticMemorySimThreshold: 80,

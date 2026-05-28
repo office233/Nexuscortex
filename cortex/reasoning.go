@@ -34,11 +34,24 @@ import (
 
 // ReasoningEngine provides deterministic symbolic reasoning capabilities
 // that complement the neural pipeline.
-type ReasoningEngine struct{}
+type ReasoningEngine struct {
+	// Tools is an optional registry of pluggable deterministic skills.
+	// When non-nil, it is consulted BEFORE the hardcoded skills so that
+	// new capabilities can be added without touching this file. The
+	// hardcoded skills remain as a fallback for backward compatibility.
+	Tools *ToolRegistry
+}
 
-// NewReasoningEngine creates a new reasoning engine.
+// NewReasoningEngine creates a new reasoning engine without tools.
+// Use AttachTools() to plug in a ToolRegistry.
 func NewReasoningEngine() *ReasoningEngine {
 	return &ReasoningEngine{}
+}
+
+// AttachTools wires a ToolRegistry into the engine. Safe to call once at
+// Organism construction time. Passing nil disables the registry path.
+func (r *ReasoningEngine) AttachTools(tr *ToolRegistry) {
+	r.Tools = tr
 }
 
 // TryReason attempts to handle the input with deterministic reasoning.
@@ -48,6 +61,14 @@ func (r *ReasoningEngine) TryReason(input string) (string, bool) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return "", false
+	}
+
+	// Pluggable tools take priority over hardcoded skills. They're
+	// optional and side-effect-free; on miss we fall through.
+	if r.Tools != nil {
+		if ans, _, ok := r.Tools.Dispatch(input); ok {
+			return ans, true
+		}
 	}
 
 	lower := strings.ToLower(input)

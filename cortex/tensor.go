@@ -4,7 +4,19 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+
+	"nexus-cortex/cortex/compute"
 )
+
+// gpuMatmulMinFlops is the lower flop threshold (M*N*K) at which a
+// matmul becomes profitable on GPU. Below this the host<->device copy
+// dominates and CPU is faster.
+//
+// Tuned for GTX 1660 Ti (PCIe 3.0 x16). Roughly: a 32^3 matmul = 32k
+// flops takes ~20us H2D + 20us D2H + 5us compute = 45us total, while
+// CPU does it in ~10us. A 128^3 = 2M flops matmul takes ~80us GPU vs
+// ~600us CPU — GPU wins. Threshold is conservative.
+const gpuMatmulMinFlops = 1 << 16 // 65536
 
 // ─────────────────────────────────────────────────────────────────────
 // Tensor — Minimal Tensor Library for Nexus Cortex
@@ -151,6 +163,14 @@ func (a *Tensor) MatMul(b *Tensor) *Tensor {
 		panic(fmt.Sprintf("MatMul dimension mismatch: %v × %v", a.Shape, b.Shape))
 	}
 
+	// GPU fast path. Falls back to CPU on any error so a transient CUDA
+	// failure can't crash a training run.
+	if compute.IsCuBLASAvailable() && M*N*K >= gpuMatmulMinFlops {
+		if out, err := compute.MatMulGPU(a.Data, b.Data, M, N, K); err == nil {
+			return &Tensor{Data: out, Shape: []int{M, N}}
+		}
+	}
+
 	c := NewTensor(M, N)
 	matmulRows(a.Data, b.Data, c.Data, 0, M, K, N)
 	return c
@@ -204,6 +224,12 @@ func (a *Tensor) MatMulTransposed(b *Tensor) *Tensor {
 	N := b.Shape[0]
 	if b.Shape[1] != K {
 		panic(fmt.Sprintf("MatMulTransposed dimension mismatch: %v × %v^T", a.Shape, b.Shape))
+	}
+
+	if compute.IsCuBLASAvailable() && M*N*K >= gpuMatmulMinFlops {
+		if out, err := compute.MatMulNTGPU(a.Data, b.Data, M, N, K); err == nil {
+			return &Tensor{Data: out, Shape: []int{M, N}}
+		}
 	}
 
 	c := NewTensor(M, N)

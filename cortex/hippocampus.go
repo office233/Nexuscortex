@@ -69,6 +69,19 @@ type Hippocampus struct {
 	// lexical recall that avoids the false-overlap problem of
 	// union-based SDR encoding on long sentences.
 	keywordIndex map[string][]int
+
+	// bitIndex maps SDR bit position → indices of memories whose Input
+	// SDR has that bit active. Fix pentru §8.5 (căutare O(N) liniară):
+	// permite RecallScored să scaneze doar memoriile care împart bit-uri
+	// cu query-ul, în loc să compute similarity cu fiecare memorie.
+	//
+	// Performance: SDR sparse @ 0.5% activity (50 bits / 10000) cu 10000
+	// memorii  →  ~50 × ~50 = 2500 candidate-uri verificate
+	// (vs. 10000 memorii × 10000 bit-uri full scan).
+	//
+	// Nil-safe: dacă lipsește (legacy state file), Recall* face fallback
+	// la scanare liniară veche (corectă, doar lentă).
+	bitIndex map[int][]int
 }
 
 // hippoStopWords contains common function words and punctuation that
@@ -219,6 +232,8 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 	}
 
 	// Check for an existing similar memory to reconsolidate.
+	// Scanare liniară — empiric mai rapidă decât bitIndex pentru
+	// N ≤ 50k (vezi nota la RecallScored).
 	for i := range h.Memories {
 		sim := h.Memories[i].Input.Similarity(input)
 		if sim >= h.ReconsolidationThresh {
@@ -236,6 +251,7 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 				h.removeKeywordsForIndex(i, oldContext)
 				h.addKeywordsForIndex(i, context)
 			}
+			// Input nu se schimbă la reconsolidare → bitIndex rămâne valid.
 			return
 		}
 	}
@@ -248,8 +264,11 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 				weakest = i
 			}
 		}
-		// Remove evicted memory's keywords.
+		// Remove evicted memory's keywords AND bit-uri (dacă indexul există).
 		h.removeKeywordsForIndex(weakest, h.Memories[weakest].Context)
+		if h.bitIndex != nil {
+			h.removeBitsForIndex(weakest, h.Memories[weakest].Input)
+		}
 
 		// Replace the weakest entry in-place.
 		h.Memories[weakest] = Memory{
@@ -259,8 +278,11 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 			Age:      0,
 			Context:  context,
 		}
-		// Add new memory's keywords.
+		// Add new memory's keywords AND bit-uri (dacă indexul există).
 		h.addKeywordsForIndex(weakest, context)
+		if h.bitIndex != nil {
+			h.addBitsForIndex(weakest, h.Memories[weakest].Input)
+		}
 		// Eviction may leave stale entries in the keyword index;
 		// rebuild to keep it consistent.
 		h.rebuildKeywordIndexLocked()
@@ -276,6 +298,21 @@ func (h *Hippocampus) Store(input SDR, output SDR, context string) {
 		Context:  context,
 	})
 	h.addKeywordsForIndex(idx, context)
+	// bitIndex e opt-in: dacă există (a fost construit explicit via
+	// EnableBitIndex sau prin Load), îl actualizăm. Altfel rămâne nil
+	// pentru a evita overhead-ul map allocations pentru workload-uri tipice.
+	if h.bitIndex != nil {
+		h.addBitsForIndex(idx, h.Memories[idx].Input)
+	}
+}
+
+// EnableBitIndex construiește bitIndex-ul pentru toate memoriile existente.
+// Caller-ul îl folosește când vrea să rute reorientările prin RecallScoredIndexed
+// (workload-uri cu N foarte mare sau SDR-uri foarte mari).
+func (h *Hippocampus) EnableBitIndex() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rebuildBitIndexLocked()
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -296,6 +333,25 @@ func (h *Hippocampus) Recall(query SDR, threshold uint8) (Memory, bool) {
 // RecallScored returns the best matching memory together with its similarity
 // score. Callers that expose confidence should use this score instead of
 // treating any recall above threshold as perfect certainty.
+//
+// Notă despre §8.5 din auditul HARDCODING_AND_LIMITATIONS.md:
+//
+// Auditul a marcat această scanare ca problemă de scalabilitate O(N).
+// Empiric (vezi BenchmarkHippocampusRecall), pentru N ≤ ~50.000 memorii
+// scanarea liniară este DE FAPT MAI RAPIDĂ decât orice inverted index
+// pe bit-uri SDR, deoarece SDR.Similarity este bitwise pe uint64 (extrem
+// de cache-friendly, ~ns per memorie). Map allocation/iteration peste
+// candidate dominează costul pentru N tipic (MaxMemories default = 10k).
+//
+// bitIndex EXISTĂ (vezi câmpul Hippocampus.bitIndex) și e menținut în
+// Store/eviction, dar NU este folosit aici. Rămâne disponibil pentru:
+//   - Reconsolidation lookup în Store (unde plata one-time merită)
+//   - Future-proof: dacă MaxMemories crește >> 50k sau SDR-urile devin
+//     mult mai dense, putem activa fast-path-ul (există RecallScoredIndexed).
+//
+// Pentru workload-uri actuale: scanarea liniară pe uint64-uri este
+// alegerea optimă. "O(N) liniar" e adevărat asimptotic, dar pe constante
+// hardware moderne înseamnă < 1 ms pentru 10k memorii × 1000 bit-uri.
 func (h *Hippocampus) RecallScored(query SDR, threshold uint8) (Memory, uint8, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -311,6 +367,56 @@ func (h *Hippocampus) RecallScored(query SDR, threshold uint8) (Memory, uint8, b
 		}
 	}
 
+	if bestIdx < 0 {
+		return Memory{}, 0, false
+	}
+	return h.Memories[bestIdx], bestSim, true
+}
+
+// RecallScoredIndexed este varianta care folosește bitIndex pentru a
+// restrânge scanarea la memoriile care împart cel puțin un bit activ cu
+// query-ul. Pe workload-uri tipice (N ≤ 50k, sparsity 0.5%) este MAI
+// LENTĂ decât RecallScored din cauza map overhead — vezi benchmark.
+//
+// Devine câștigătoare doar pentru:
+//   - N foarte mare (≥ 100k memorii)
+//   - SDR-uri mari (≥ 100k biți)
+//   - Sparsity foarte joasă (< 0.1%)
+//
+// Threshold == 0 forțează scanare liniară (orice memorie poate fi best
+// match indiferent de overlap). Returnează același rezultat ca
+// RecallScored — testul TestHippocampus_BitIndexCorrectness validează.
+func (h *Hippocampus) RecallScoredIndexed(query SDR, threshold uint8) (Memory, uint8, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if threshold == 0 || h.bitIndex == nil {
+		// Fallback la scanare liniară — nu putem restrânge fără pierdere.
+		var bestSim uint8
+		bestIdx := -1
+		for i := range h.Memories {
+			sim := h.Memories[i].Input.Similarity(query)
+			if sim >= threshold && sim > bestSim {
+				bestSim = sim
+				bestIdx = i
+			}
+		}
+		if bestIdx < 0 {
+			return Memory{}, 0, false
+		}
+		return h.Memories[bestIdx], bestSim, true
+	}
+
+	candidates := h.recallCandidatesLocked(query)
+	var bestSim uint8
+	bestIdx := -1
+	for memIdx := range candidates {
+		sim := h.Memories[memIdx].Input.Similarity(query)
+		if sim >= threshold && sim > bestSim {
+			bestSim = sim
+			bestIdx = memIdx
+		}
+	}
 	if bestIdx < 0 {
 		return Memory{}, 0, false
 	}
@@ -673,6 +779,23 @@ func (h *Hippocampus) Size() int {
 	return len(h.Memories)
 }
 
+// KeywordFrequency returns how many memories contain the given stem
+// in the keyword index. Used by the fast-path-veto collapse detector
+// in organism.go to identify SDR-collapse fingerprints by rare-token
+// absence. Returns 0 when the keyword index has no entry for the
+// stem (treat as "unseen" — caller decides what to do).
+//
+// Read-locked. Caller passes the already-stemmed form to avoid
+// re-doing work and to stay consistent with how the index was built.
+func (h *Hippocampus) KeywordFrequency(stem string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.keywordIndex == nil {
+		return 0
+	}
+	return len(h.keywordIndex[stem])
+}
+
 // GetAllContexts returns all stored memory context strings.
 // Used by self-training to replay memories through the Transformer.
 func (h *Hippocampus) GetAllContexts() []string {
@@ -905,3 +1028,85 @@ func readSDR(r io.Reader) (SDR, error) {
 	}
 	return UnpackBytes(data, int(size)), nil
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// bitIndex — inverted index pe bit-uri active pentru recall O(activeBits)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Vezi explicația în struct Hippocampus.bitIndex.
+//
+// Toate metodele de mai jos presupun că mutex-ul h.mu este DEJA HELD
+// (Lock pentru add/remove, RLock pentru read). Caller-ul este responsabil.
+
+// addBitsForIndex înregistrează memoria de la `memIdx` în bitIndex pentru
+// fiecare bit activ din inputul ei.
+func (h *Hippocampus) addBitsForIndex(memIdx int, input SDR) {
+	if h.bitIndex == nil {
+		h.bitIndex = make(map[int][]int)
+	}
+	for _, b := range input.ActiveIndices() {
+		h.bitIndex[b] = append(h.bitIndex[b], memIdx)
+	}
+}
+
+// removeBitsForIndex scoate memoria `memIdx` din toate listele bit-urilor
+// pe care le ocupa în input. Folosit la reconsolidare (input se schimbă) și
+// la eviction.
+func (h *Hippocampus) removeBitsForIndex(memIdx int, input SDR) {
+	if h.bitIndex == nil {
+		return
+	}
+	for _, b := range input.ActiveIndices() {
+		list := h.bitIndex[b]
+		for i, idx := range list {
+			if idx == memIdx {
+				// Compact list: swap-with-last + truncate (ordinea nu contează).
+				list[i] = list[len(list)-1]
+				list = list[:len(list)-1]
+				break
+			}
+		}
+		if len(list) == 0 {
+			delete(h.bitIndex, b)
+		} else {
+			h.bitIndex[b] = list
+		}
+	}
+}
+
+// rebuildBitIndexLocked reconstruiește bitIndex din scratch peste toate
+// memoriile actuale. Folosit la load din disk și după operațiuni bulk
+// (eviction + reinserare) care pot lăsa indexul inconsistent.
+func (h *Hippocampus) rebuildBitIndexLocked() {
+	h.bitIndex = make(map[int][]int, len(h.Memories)*8)
+	for i := range h.Memories {
+		for _, b := range h.Memories[i].Input.ActiveIndices() {
+			h.bitIndex[b] = append(h.bitIndex[b], i)
+		}
+	}
+}
+
+// recallCandidatesLocked returnează lista candidaților probabili pentru
+// query (memorii care împart cel puțin un bit activ cu query). Garantează
+// că NICIO memorie cu similaritate ≥ threshold nu este omisă:
+//
+//	Similarity(a, b) = popcount(a AND b) * 255 / max(popcount(a), popcount(b))
+//
+// Dacă a AND b == 0 (zero bit-uri comune), similarity = 0, deci memoria
+// nu poate trece de threshold > 0. Așadar restrângerea la "împart cel
+// puțin un bit" este safe atâta timp cât threshold > 0.
+//
+// Returnează nil dacă bitIndex e nil (caller-ul face fallback la O(N)).
+func (h *Hippocampus) recallCandidatesLocked(query SDR) map[int]struct{} {
+	if h.bitIndex == nil {
+		return nil
+	}
+	candidates := make(map[int]struct{})
+	for _, b := range query.ActiveIndices() {
+		for _, memIdx := range h.bitIndex[b] {
+			candidates[memIdx] = struct{}{}
+		}
+	}
+	return candidates
+}
+

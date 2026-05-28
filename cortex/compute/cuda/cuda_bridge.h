@@ -47,6 +47,35 @@ NEXUS_API int nexus_cuda_batch_sdr_similarity(
     uint32_t        numMemories
 );
 
+// ─── cuBLAS dense float32 matmul ─────────────────────────────────────────
+//
+// All matrices are ROW-MAJOR (the way Go stores them). The bridge handles
+// the row<->column-major flip when calling cuBLAS internally.
+//
+// Lifecycle: call nexus_cublas_init() once at startup, nexus_cublas_close()
+// at shutdown. The handle is process-global; concurrent sgemm calls from
+// Go must be serialised by the caller (cuBLAS handles are NOT thread-safe).
+
+// Initialise the cuBLAS handle. Returns 0 on success.
+NEXUS_API int nexus_cublas_init(int device_id);
+
+// Release the cuBLAS handle.
+NEXUS_API void nexus_cublas_close(void);
+
+// C[M,N] = A[M,K] * B[K,N]    (all row-major)
+// Returns 0 on success, non-zero on any CUDA/cuBLAS error.
+NEXUS_API int nexus_cublas_sgemm(
+    const float* A, const float* B, float* C,
+    int M, int N, int K
+);
+
+// C[M,N] = A[M,K] * B[N,K]^T  (all row-major; B is logically [N,K])
+// Equivalent to Tensor.MatMulTransposed.
+NEXUS_API int nexus_cublas_sgemm_nt(
+    const float* A, const float* B, float* C,
+    int M, int N, int K
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -30,8 +30,9 @@ type TransformerConfig struct {
 	EOSTokenID int `json:"eos_token_id"` // End-of-sequence token ID (default 3)
 }
 
-// DefaultEOSTokenID is the default end-of-sequence token ID.
-const DefaultEOSTokenID = 3
+// Notă: nu există DefaultEOSTokenID aici. Sursa unică de adevăr pentru
+// EOS token este Config.TransformerEOSTokenID (vezi cortex/config.go).
+// TransformerConfig.EOSTokenID este populat din acel câmp la construire.
 
 // perturbLearningRateScale controls the perturbation magnitude relative to
 // the learning rate in updateBlockWeights. Smaller values produce more
@@ -295,10 +296,24 @@ type TransformerBlock struct {
 	LN2Gamma *Tensor // [EmbedDim]
 	LN2Beta  *Tensor // [EmbedDim]
 
+	// LayerNorm gradient accumulators (filled by Backward).
+	LN1GammaGrad *Tensor
+	LN1BetaGrad  *Tensor
+	LN2GammaGrad *Tensor
+	LN2BetaGrad  *Tensor
+
 	// Cached for backward
 	lastInput   *Tensor
-	lastNormed1 *Tensor
-	lastNormed2 *Tensor
+	lastNormed1 *Tensor // x → LN1 → normed1 (input to Attn)
+	lastNormed2 *Tensor // (x+attnOut) → LN2 → normed2 (input to FFN)
+	lastResid1  *Tensor // x + attnOut (input to LN2)
+	// LayerNorm forward statistics needed for backward: per-row mean and
+	// inverse stddev, sized [seqLen]. ln1Mean[i] / ln1InvStd[i] correspond
+	// to row i of lastInput; ln2Mean[i] / ln2InvStd[i] correspond to row i
+	// of lastResid1. Filled by Forward (when training is active), consumed
+	// by Backward.
+	ln1Mean, ln1InvStd []float32
+	ln2Mean, ln2InvStd []float32
 }
 
 // NewTransformerBlock creates a transformer block.
@@ -315,12 +330,16 @@ func NewTransformerBlock(embedDim, numHeads, ffnDim int, rng *rand.Rand) *Transf
 	}
 
 	return &TransformerBlock{
-		Attn:     NewMultiHeadAttention(embedDim, numHeads, rng),
-		FFN:      NewFeedForward(embedDim, ffnDim, rng),
-		LN1Gamma: ln1g,
-		LN1Beta:  ln1b,
-		LN2Gamma: ln2g,
-		LN2Beta:  ln2b,
+		Attn:         NewMultiHeadAttention(embedDim, numHeads, rng),
+		FFN:          NewFeedForward(embedDim, ffnDim, rng),
+		LN1Gamma:     ln1g,
+		LN1Beta:      ln1b,
+		LN2Gamma:     ln2g,
+		LN2Beta:      ln2b,
+		LN1GammaGrad: NewTensor(embedDim),
+		LN1BetaGrad:  NewTensor(embedDim),
+		LN2GammaGrad: NewTensor(embedDim),
+		LN2BetaGrad:  NewTensor(embedDim),
 	}
 }
 
@@ -349,6 +368,10 @@ func (tb *TransformerBlock) Forward(x *Tensor) *Tensor {
 func (tb *TransformerBlock) ZeroGrad() {
 	tb.Attn.ZeroGrad()
 	tb.FFN.ZeroGrad()
+	tb.LN1GammaGrad.Zeros()
+	tb.LN1BetaGrad.Zeros()
+	tb.LN2GammaGrad.Zeros()
+	tb.LN2BetaGrad.Zeros()
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -365,13 +388,21 @@ type MiniTransformer struct {
 	LNFGamma *Tensor // [EmbedDim]
 	LNFBeta  *Tensor // [EmbedDim]
 
+	// LayerNorm-final gradient accumulators.
+	LNFGammaGrad *Tensor
+	LNFBetaGrad  *Tensor
+
 	// LM Head: projects hidden states to vocabulary logits
 	// Shares weights with embedding (weight tying)
 	// lmHead = Embedding.TokenEmb transposed → [EmbedDim, VocabSize]
 	UseTiedWeights bool
 
-	// Cached hidden state from last Forward() for use in TrainStep
-	lastHiddenState *Tensor
+	// Cached hidden state from last Forward() for use in TrainStep.
+	// lastPreLNF is the input to the final LayerNorm; lastHiddenState
+	// is the output (after LNF). Both are needed for backward.
+	lastPreLNF       *Tensor
+	lastHiddenState  *Tensor
+	lnfMean, lnfInvStd []float32
 
 	Rng *rand.Rand
 }
@@ -397,6 +428,8 @@ func NewMiniTransformer(cfg TransformerConfig, rng *rand.Rand) *MiniTransformer 
 		Blocks:         blocks,
 		LNFGamma:       lnfg,
 		LNFBeta:        lnfb,
+		LNFGammaGrad:   NewTensor(cfg.EmbedDim),
+		LNFBetaGrad:    NewTensor(cfg.EmbedDim),
 		UseTiedWeights: true,
 		Rng:            rng,
 	}
