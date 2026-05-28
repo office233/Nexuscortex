@@ -313,13 +313,21 @@ type CortexBlock struct {
 	OutputLayer *TernaryLayer
 
 	// Config
-	Dim   int // Internal dimension
-	TopK  int // Attention top-K
+	Dim  int // Internal dimension
+	TopK int // Attention top-K
+
+	// Scratch buffers reused across ProcessToken calls. Not safe for
+	// concurrent use on the same block — but a single CortexBlock has
+	// always held mutable state (Attention cache, Scan state), so the
+	// caller-must-serialize contract is unchanged.
+	scratchActIn   []int16
+	scratchActOut  []int16
+	scratchUnion   SDR // single buffer is enough: residual is the block's return value
 }
 
 // NewCortexBlock creates a complete processing block.
 func NewCortexBlock(dim, contextLen, topK int, decayRate uint8) *CortexBlock {
-	return &CortexBlock{
+	b := &CortexBlock{
 		FeatureLayer: NewTernaryLayer(dim, dim),
 		Attention:    NewSDRAttentionHead(dim, dim, contextLen),
 		Scan:         NewLinearScanLayer(dim, dim, dim, decayRate),
@@ -327,14 +335,43 @@ func NewCortexBlock(dim, contextLen, topK int, decayRate uint8) *CortexBlock {
 		Dim:          dim,
 		TopK:         topK,
 	}
+	b.initScratch()
+	return b
+}
+
+// initScratch sizes the per-block scratch buffers to b.Dim.
+func (b *CortexBlock) initScratch() {
+	if cap(b.scratchActIn) < b.Dim {
+		b.scratchActIn = make([]int16, b.Dim)
+	} else {
+		b.scratchActIn = b.scratchActIn[:b.Dim]
+	}
+	if cap(b.scratchActOut) < b.Dim {
+		b.scratchActOut = make([]int16, b.Dim)
+	} else {
+		b.scratchActOut = b.scratchActOut[:b.Dim]
+	}
+	if b.scratchUnion.Size != b.Dim {
+		b.scratchUnion = NewSDR(b.Dim)
+	}
 }
 
 // ProcessToken runs one token through the complete block.
+//
+// Uses scratch buffers on the block to eliminate the per-call int16 and
+// SDR allocations that previously dominated the hot path. The SDRs
+// returned by activationsToSDR / Attention.Query / StepFast are still
+// freshly allocated because Attention's ring buffer and Scan's state
+// retain references to them.
 func (b *CortexBlock) ProcessToken(input SDR) SDR {
+	if b.scratchUnion.Size != b.Dim {
+		b.initScratch()
+	}
+
 	// 1. Feature extraction through ternary layer
-	inputAct := sdrToActivations(input)
-	featAct := b.FeatureLayer.Forward(inputAct)
-	features := activationsToSDR(featAct, input.ActiveCount)
+	sdrToActivationsInto(input, b.scratchActIn)
+	b.FeatureLayer.forwardInto(b.scratchActIn, b.scratchActOut)
+	features := activationsToSDR(b.scratchActOut, input.ActiveCount)
 
 	// 2. SDR Attention — retrieve relevant context
 	b.Attention.Store(features, features)
@@ -343,13 +380,18 @@ func (b *CortexBlock) ProcessToken(input SDR) SDR {
 	// 3. Linear Scan — update temporal state
 	scanned := b.Scan.StepFast(attended)
 
-	// 4. Output projection
-	scanAct := sdrToActivations(scanned)
-	outAct := b.OutputLayer.Forward(scanAct)
-	output := activationsToSDR(outAct, input.ActiveCount)
+	// 4. Output projection — reuses the same scratch buffers; safe because
+	//    steps 1-3 are complete.
+	sdrToActivationsInto(scanned, b.scratchActIn)
+	b.OutputLayer.forwardInto(b.scratchActIn, b.scratchActOut)
+	output := activationsToSDR(b.scratchActOut, input.ActiveCount)
 
-	// 5. Residual connection — union with input to preserve information
-	return output.Union(input)
+	// 5. Residual connection: write output ∪ input into the block's
+	//    scratchUnion and return it. The next block reads this value
+	//    immediately at its own step 1 and never holds it past that point,
+	//    so a single buffer is sufficient.
+	unionInto(&b.scratchUnion, output, input)
+	return b.scratchUnion
 }
 
 // Reset clears the temporal state of this block.
@@ -707,6 +749,19 @@ type SharedCortexStack struct {
 	NumLayers int
 	Dim       int
 	TopK      int
+
+	// Scratch buffers reused across processLayer calls within a single
+	// ProcessToken invocation. These are NOT safe for concurrent use:
+	// a SharedCortexStack must be processed by one goroutine at a time
+	// (which was already true — Attentions and Scans hold mutable state).
+	//
+	// Two union buffers are alternated so layer N+1 can still read its
+	// input (produced by layer N into one buffer) while layer N+1 writes
+	// its own output into the other buffer.
+	scratchActIn   []int16 // input activations for SharedFeatureLayer/SharedOutputLayer
+	scratchActOut  []int16 // output activations from Forward
+	scratchUnion   [2]SDR  // double-buffered residual SDR
+	scratchUnionIx int     // index of the buffer to write next
 }
 
 // NewSharedCortexStack creates an ALBERT-style shared stack.
@@ -746,7 +801,7 @@ func NewSharedCortexStack(numLayers, dim, contextLen, topK int, decayRate uint8,
 		}
 	}
 
-	return &SharedCortexStack{
+	s := &SharedCortexStack{
 		SharedFeatureLayer: sharedFeature,
 		SharedOutputLayer:  sharedOutput,
 		Attentions:         attns,
@@ -754,6 +809,28 @@ func NewSharedCortexStack(numLayers, dim, contextLen, topK int, decayRate uint8,
 		NumLayers:          numLayers,
 		Dim:                dim,
 		TopK:               topK,
+	}
+	s.initScratch()
+	return s
+}
+
+// initScratch (re)allocates scratch buffers sized to s.Dim.
+// Safe to call multiple times; idempotent if Dim hasn't changed.
+func (s *SharedCortexStack) initScratch() {
+	if cap(s.scratchActIn) < s.Dim {
+		s.scratchActIn = make([]int16, s.Dim)
+	} else {
+		s.scratchActIn = s.scratchActIn[:s.Dim]
+	}
+	if cap(s.scratchActOut) < s.Dim {
+		s.scratchActOut = make([]int16, s.Dim)
+	} else {
+		s.scratchActOut = s.scratchActOut[:s.Dim]
+	}
+	if s.scratchUnion[0].Size != s.Dim {
+		s.scratchUnion[0] = NewSDR(s.Dim)
+		s.scratchUnion[1] = NewSDR(s.Dim)
+		s.scratchUnionIx = 0
 	}
 }
 
@@ -769,11 +846,22 @@ func (s *SharedCortexStack) ProcessToken(input SDR) SDR {
 }
 
 // processLayer runs one token through one virtual layer.
+//
+// Uses scratch buffers on SharedCortexStack to avoid per-call allocations
+// for the int16 activation arrays and the final residual SDR. The SDR
+// instances produced by activationsToSDR / Attention.Query / StepFast are
+// still freshly allocated because Attention's ring buffer and Scan's state
+// hold references to them — recycling those would alias mutable state.
 func (s *SharedCortexStack) processLayer(input SDR, layerIdx int) SDR {
-	// 1. Feature extraction through SHARED ternary weights
-	inputAct := sdrToActivations(input)
-	featAct := s.SharedFeatureLayer.Forward(inputAct)
-	features := activationsToSDR(featAct, input.ActiveCount)
+	if s.scratchUnion[0].Size != s.Dim {
+		s.initScratch()
+	}
+
+	// 1. Feature extraction through SHARED ternary weights.
+	//    Reuses scratchActIn / scratchActOut instead of allocating per call.
+	sdrToActivationsInto(input, s.scratchActIn)
+	s.SharedFeatureLayer.forwardInto(s.scratchActIn, s.scratchActOut)
+	features := activationsToSDR(s.scratchActOut, input.ActiveCount)
 
 	// 2. SDR Attention — PER-LAYER independent cache
 	s.Attentions[layerIdx].Store(features, features)
@@ -782,13 +870,21 @@ func (s *SharedCortexStack) processLayer(input SDR, layerIdx int) SDR {
 	// 3. Linear Scan — PER-LAYER independent state
 	scanned := s.Scans[layerIdx].StepFast(attended)
 
-	// 4. Output projection through SHARED ternary weights
-	scanAct := sdrToActivations(scanned)
-	outAct := s.SharedOutputLayer.Forward(scanAct)
-	output := activationsToSDR(outAct, input.ActiveCount)
+	// 4. Output projection through SHARED ternary weights.
+	//    Same scratch buffers reused — safe because step 3 is complete and
+	//    we no longer need the feature-extraction intermediates.
+	sdrToActivationsInto(scanned, s.scratchActIn)
+	s.SharedOutputLayer.forwardInto(s.scratchActIn, s.scratchActOut)
+	output := activationsToSDR(s.scratchActOut, input.ActiveCount)
 
-	// 5. Residual connection
-	return output.Union(input)
+	// 5. Residual connection: union(output, input) into one of the two
+	//    double-buffered SDRs. Layer N+1's processLayer call will write
+	//    into the OTHER buffer at step 5, so this buffer stays valid as
+	//    that call's `input` argument throughout.
+	dst := &s.scratchUnion[s.scratchUnionIx]
+	s.scratchUnionIx ^= 1
+	unionInto(dst, output, input)
+	return *dst
 }
 
 // Reset clears all per-layer temporal state.
@@ -839,5 +935,146 @@ func (s *SharedCortexStack) CompressionRatio() float64 {
 		return 0
 	}
 	return float64(s.EffectiveParameters()) / float64(stored)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Allocation-free helpers used by SharedCortexStack.processLayer
+// ─────────────────────────────────────────────────────────────────────
+
+// sdrToActivationsInto writes activation values into a preallocated dst
+// slice (must have len ≥ sdr.Size). Inactive positions are zeroed.
+// Mirrors sdrToActivations but does not allocate.
+func sdrToActivationsInto(sdr SDR, dst []int16) {
+	if len(dst) < sdr.Size {
+		// Caller error; fall back to safe zero-fill of what we can.
+		for i := range dst {
+			dst[i] = 0
+		}
+		return
+	}
+	// Zero only the prefix we'll write into.
+	for i := 0; i < sdr.Size; i++ {
+		dst[i] = 0
+	}
+	for _, bit := range sdr.ActiveIndices() {
+		if bit < sdr.Size {
+			dst[bit] = sdrActivationValue
+		}
+	}
+}
+
+// forwardInto computes Forward into a caller-provided output slice
+// (len must be ≥ l.OutputSize). Output is overwritten, then bias added,
+// matching the semantics of Forward exactly.
+//
+// Intended for hot loops where the same output buffer is reused across
+// many calls (e.g., SharedCortexStack.processLayer). Use Forward when
+// the caller wants a fresh slice.
+func (l *TernaryLayer) forwardInto(input []int16, output []int16) {
+	if len(output) < l.OutputSize {
+		panic("forwardInto: output buffer too small")
+	}
+	copy(output[:l.OutputSize], l.Bias)
+
+	for j := 0; j < l.OutputSize; j++ {
+		var acc int32
+		rowOffset := j * l.TilesPerRow
+
+		for t := 0; t < l.TilesPerRow; t++ {
+			tile := uint32(l.Tiles[rowOffset+t])
+			signLo := uint8(tile)
+			maskLo := uint8(tile >> 8)
+			signHi := uint8(tile >> 16)
+			maskHi := uint8(tile >> 24)
+
+			posLo := maskLo &^ signLo
+			negLo := maskLo & signLo
+			baseIdx := t * 16
+
+			for posLo != 0 {
+				bit := posLo & (-posLo)
+				idx := baseIdx + bits.TrailingZeros8(bit)
+				if idx < l.InputSize {
+					acc += int32(input[idx])
+				}
+				posLo ^= bit
+			}
+			for negLo != 0 {
+				bit := negLo & (-negLo)
+				idx := baseIdx + bits.TrailingZeros8(bit)
+				if idx < l.InputSize {
+					acc -= int32(input[idx])
+				}
+				negLo ^= bit
+			}
+
+			posHi := maskHi &^ signHi
+			negHi := maskHi & signHi
+
+			for posHi != 0 {
+				bit := posHi & (-posHi)
+				idx := baseIdx + 8 + bits.TrailingZeros8(bit)
+				if idx < l.InputSize {
+					acc += int32(input[idx])
+				}
+				posHi ^= bit
+			}
+			for negHi != 0 {
+				bit := negHi & (-negHi)
+				idx := baseIdx + 8 + bits.TrailingZeros8(bit)
+				if idx < l.InputSize {
+					acc -= int32(input[idx])
+				}
+				negHi ^= bit
+			}
+		}
+
+		if acc > 32767 {
+			acc = 32767
+		} else if acc < -32768 {
+			acc = -32768
+		}
+		output[j] += int16(acc)
+	}
+}
+
+// unionInto writes a∪b into dst without allocating. dst.Bits must already
+// have the correct length for the two operands; on size mismatch the call
+// is a no-op (caller is expected to have sized dst to match).
+func unionInto(dst *SDR, a, b SDR) {
+	// Pick the larger size if a and b differ; dst must accommodate it.
+	size := a.Size
+	if b.Size > size {
+		size = b.Size
+	}
+	if dst.Size != size {
+		// Fallback: reallocate. Should not happen on the hot path because
+		// SharedCortexStack pre-sizes both scratch buffers to s.Dim.
+		*dst = NewSDR(size)
+	}
+	words := wordsNeeded(size)
+	if len(dst.Bits) < words {
+		dst.Bits = make([]uint64, words)
+	}
+
+	// dst.Bits = a.Bits | b.Bits, word by word, padding the shorter operand.
+	for i := 0; i < words; i++ {
+		var av, bv uint64
+		if i < len(a.Bits) {
+			av = a.Bits[i]
+		}
+		if i < len(b.Bits) {
+			bv = b.Bits[i]
+		}
+		dst.Bits[i] = av | bv
+	}
+	dst.Size = size
+
+	// Recount active bits.
+	count := 0
+	for _, w := range dst.Bits {
+		count += bits.OnesCount64(w)
+	}
+	dst.ActiveCount = count
 }
 
