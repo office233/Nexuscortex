@@ -146,6 +146,47 @@ def download_wikipedia_en(max_articles: int = 100000):
     return total_sentences
 
 
+def download_wikipedia_simple(max_articles: int = 200000):
+    """Download Wikipedia Simple English â€” perfect for small models.
+
+    Simple Wikipedia uses a controlled vocabulary and shorter sentences,
+    giving cleaner training signal than full Wikipedia for a 5-50M model.
+    Total ~170K articles; we stream so we can cap at any size.
+    """
+    from datasets import load_dataset
+
+    output_path = CORPUS_DIR / "wikipedia_simple.jsonl"
+    print(f"\n[*] Downloading Wikipedia Simple English...")
+    print(f"   Target: {output_path}")
+    print(f"   Max articles: {max_articles}")
+
+    ds = load_dataset("wikimedia/wikipedia", "20231101.simple", split="train",
+                      trust_remote_code=False, streaming=True)
+
+    count = 0
+    total_sentences = 0
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for article in ds:
+            if count >= max_articles:
+                break
+            text = clean_text(article.get('text', ''))
+            if not text or len(text) < 100:
+                continue
+            sentences = split_into_sentences(text)
+            for sentence in sentences:
+                entry = {"text": sentence}
+                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+                total_sentences += 1
+            count += 1
+            if count % 5000 == 0:
+                print(f"   [..] Processed {count} articles, {total_sentences} sentences...")
+
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"   [OK] Wikipedia Simple: {count} articles -> {total_sentences} sentences ({size_mb:.1f} MB)")
+    return total_sentences
+
+
 def download_alpaca():
     """Download Stanford Alpaca 52K instructions."""
     from datasets import load_dataset
@@ -299,11 +340,13 @@ def main():
     parser.add_argument("--all", action="store_true", help="Download all datasets")
     parser.add_argument("--wiki-ro", action="store_true", help="Romanian Wikipedia")
     parser.add_argument("--wiki-en", action="store_true", help="English Wikipedia (100K articles)")
+    parser.add_argument("--wiki-simple", action="store_true", help="Wikipedia Simple English (~170K articles, perfect for small models)")
     parser.add_argument("--alpaca", action="store_true", help="Stanford Alpaca 52K")
     parser.add_argument("--dolly", action="store_true", help="Databricks Dolly 15K")
     parser.add_argument("--slimorca", action="store_true", help="Open-Orca SlimOrca 518K")
     parser.add_argument("--wiki-ro-max", type=int, default=50000, help="Max RO Wikipedia articles")
     parser.add_argument("--wiki-en-max", type=int, default=100000, help="Max EN Wikipedia articles")
+    parser.add_argument("--wiki-simple-max", type=int, default=200000, help="Max Simple Wikipedia articles")
     parser.add_argument("--summary", action="store_true", help="Just print corpus summary")
     args = parser.parse_args()
     
@@ -313,7 +356,7 @@ def main():
         print_summary()
         return
     
-    if not any([args.all, args.wiki_ro, args.wiki_en, args.alpaca, args.dolly, args.slimorca]):
+    if not any([args.all, args.wiki_ro, args.wiki_en, args.wiki_simple, args.alpaca, args.dolly, args.slimorca]):
         print("No dataset selected. Use --help for options, or --all to download everything.")
         return
     
@@ -334,7 +377,10 @@ def main():
     
     if args.all or args.wiki_en:
         download_wikipedia_en(args.wiki_en_max)
-    
+
+    if args.wiki_simple:
+        download_wikipedia_simple(args.wiki_simple_max)
+
     if args.all or args.slimorca:
         download_slimorca()
     
