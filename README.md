@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="docs/images/banner.png" alt="Nexus Cortex — Bio-inspired cognitive engine" width="100%" />
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/🧠_NEXUS-CORTEX-blueviolet?style=for-the-badge&labelColor=0d1117" height="40" />
 </p>
 
@@ -208,6 +212,10 @@ go run ./cmd/cortex-autonomous -data-dir ./data/cortex
 ---
 
 ## 🖥️ Neural Dashboard
+
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="Nexus Cortex Neural Dashboard" width="100%" />
+</p>
 
 Real-time visualization of the cognitive engine:
 
