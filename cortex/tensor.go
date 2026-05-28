@@ -486,43 +486,48 @@ func (t *Tensor) LayerNorm(gamma, beta *Tensor) *Tensor {
 	if len(t.Shape) != 2 {
 		panic("LayerNorm requires 2D tensor [seq_len, dim]")
 	}
+	M, N := t.Shape[0], t.Shape[1]
+	out := NewTensor(M, N)
+	t.LayerNormInto(out, gamma, beta)
+	return out
+}
 
+// LayerNormInto writes the layer-normed t into out using gamma/beta.
+// out must already be shaped like t. out may be t itself (in place).
+func (t *Tensor) LayerNormInto(out, gamma, beta *Tensor) {
+	if len(t.Shape) != 2 {
+		panic("LayerNormInto requires 2D tensor [seq_len, dim]")
+	}
 	M, N := t.Shape[0], t.Shape[1]
 	if gamma.Size() != N || beta.Size() != N {
-		panic(fmt.Sprintf("LayerNorm gamma/beta size mismatch: dim=%d, gamma=%d, beta=%d",
+		panic(fmt.Sprintf("LayerNormInto gamma/beta size mismatch: dim=%d, gamma=%d, beta=%d",
 			N, gamma.Size(), beta.Size()))
 	}
-
-	c := t.Clone()
+	if len(out.Shape) != 2 || out.Shape[0] != M || out.Shape[1] != N {
+		panic(fmt.Sprintf("LayerNormInto out shape mismatch: want [%d %d], got %v", M, N, out.Shape))
+	}
 	eps := float32(1e-5)
-
 	for i := 0; i < M; i++ {
 		off := i * N
-
-		// Compute mean
+		// Mean / variance read from t (input), so out==t is safe — we
+		// finish computing both reductions before any write.
 		mean := float32(0)
 		for j := 0; j < N; j++ {
-			mean += c.Data[off+j]
+			mean += t.Data[off+j]
 		}
 		mean /= float32(N)
-
-		// Compute variance
 		variance := float32(0)
 		for j := 0; j < N; j++ {
-			d := c.Data[off+j] - mean
+			d := t.Data[off+j] - mean
 			variance += d * d
 		}
 		variance /= float32(N)
-
-		// Normalize
 		invStd := float32(1.0 / math.Sqrt(float64(variance+eps)))
 		for j := 0; j < N; j++ {
-			normalized := (c.Data[off+j] - mean) * invStd
-			c.Data[off+j] = gamma.Data[j]*normalized + beta.Data[j]
+			normalized := (t.Data[off+j] - mean) * invStd
+			out.Data[off+j] = gamma.Data[j]*normalized + beta.Data[j]
 		}
 	}
-
-	return c
 }
 
 // ─────────────────────────────────────────────────────────────────────

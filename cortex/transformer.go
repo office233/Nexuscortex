@@ -85,10 +85,10 @@ type MultiHeadAttention struct {
 	BQGrad, BKGrad, BVGrad, BOGrad *Tensor
 
 	// Cached values for backward pass
-	lastInput *Tensor
+	lastInput           *Tensor
 	lastQ, lastK, lastV *Tensor
-	lastAttnWeights *Tensor
-	lastAttnOut *Tensor
+	lastAttnWeights     *Tensor
+	lastAttnOut         *Tensor
 
 	// Per-head scratch buffers reused across heads and across consecutive
 	// Forward calls. None of these are referenced by lastQ/lastK/etc, so
@@ -96,6 +96,11 @@ type MultiHeadAttention struct {
 	qhBuf, khBuf, vhBuf *Tensor // [seqLen, headDim]
 	scoresBuf           *Tensor // [seqLen, seqLen]
 	headOutBuf          *Tensor // [seqLen, headDim]
+
+	// Scratch slices for the single-token cached generation path. Grown
+	// to headDim and the current cache length respectively.
+	stepQhBuf     []float32 // [headDim]
+	stepScoresBuf []float32 // [cacheSeqLen]
 }
 
 // ensureMatrix returns t if it already has the requested 2D shape,
@@ -320,8 +325,9 @@ func (ff *FeedForward) ZeroGrad() {
 // ─────────────────────────────────────────────────────────────────────
 
 // TransformerBlock is a single transformer layer with pre-norm architecture:
-//   x = x + Attention(LayerNorm(x))
-//   x = x + FFN(LayerNorm(x))
+//
+//	x = x + Attention(LayerNorm(x))
+//	x = x + FFN(LayerNorm(x))
 type TransformerBlock struct {
 	Attn *MultiHeadAttention
 	FFN  *FeedForward
@@ -439,8 +445,8 @@ type MiniTransformer struct {
 	// Cached hidden state from last Forward() for use in TrainStep.
 	// lastPreLNF is the input to the final LayerNorm; lastHiddenState
 	// is the output (after LNF). Both are needed for backward.
-	lastPreLNF       *Tensor
-	lastHiddenState  *Tensor
+	lastPreLNF         *Tensor
+	lastHiddenState    *Tensor
 	lnfMean, lnfInvStd []float32
 
 	Rng *rand.Rand

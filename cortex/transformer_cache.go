@@ -34,22 +34,43 @@ type KVCache struct {
 	V *Tensor // [seqLen, embedDim], grows over time
 }
 
-// appendRow returns a new tensor with the given [embedDim] row appended
-// as the last row. We allocate fresh on each append rather than growing
-// in place because Tensor.Data is a flat slice and we want predictable
-// shape semantics. Concatenations are O(N*embedDim) which is dominated
-// by attention itself, so this stays cheap.
+// appendRow appends one [embedDim] row to existing and returns the
+// updated tensor. If existing was created with extra cap (see
+// newKVCacheLayer), the append is O(embedDim) with no reallocation:
+// we grow the Data slice in place and bump Shape[0]. Otherwise we fall
+// back to a fresh allocation (used by callers that don't preallocate,
+// e.g. tests that build a KVCache by hand).
 func appendRow(existing *Tensor, row *Tensor, embedDim int) *Tensor {
 	if existing == nil {
+		// No preallocated capacity: caller is fine with a one-row tensor.
 		out := NewTensor(1, embedDim)
 		copy(out.Data, row.Data)
 		return out
 	}
 	oldSeq := existing.Shape[0]
+	oldLen := oldSeq * embedDim
+	needed := oldLen + embedDim
+	if cap(existing.Data) >= needed {
+		existing.Data = existing.Data[:needed]
+		copy(existing.Data[oldLen:], row.Data)
+		existing.Shape[0] = oldSeq + 1
+		return existing
+	}
+	// Cold path: no headroom. Allocate fresh.
 	out := NewTensor(oldSeq+1, embedDim)
 	copy(out.Data, existing.Data)
-	copy(out.Data[oldSeq*embedDim:], row.Data)
+	copy(out.Data[oldLen:], row.Data)
 	return out
+}
+
+// newKVCacheLayer pre-allocates K and V with zero length but capacity
+// for maxSeqLen rows, so appendRow can grow in place without realloc.
+func newKVCacheLayer(maxSeqLen, embedDim int) *KVCache {
+	capSlots := maxSeqLen * embedDim
+	return &KVCache{
+		K: &Tensor{Data: make([]float32, 0, capSlots), Shape: []int{0, embedDim}},
+		V: &Tensor{Data: make([]float32, 0, capSlots), Shape: []int{0, embedDim}},
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -74,9 +95,13 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 	headDim := mha.HeadDim
 
 	// Project the new token: Q, K_new, V_new each [1, embedDim].
-	Q := x.MatMul(mha.WQ).Add(mha.BQ)
-	Knew := x.MatMul(mha.WK).Add(mha.BK)
-	Vnew := x.MatMul(mha.WV).Add(mha.BV)
+	// MatMul returns a fresh tensor so the bias add is safe in place.
+	Q := x.MatMul(mha.WQ)
+	Q.AddInPlace(mha.BQ)
+	Knew := x.MatMul(mha.WK)
+	Knew.AddInPlace(mha.BK)
+	Vnew := x.MatMul(mha.WV)
+	Vnew.AddInPlace(mha.BV)
 
 	// Append to cache so future tokens can attend back. The new query
 	// will read from cache.K / cache.V right after.
@@ -88,20 +113,29 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 
 	attnOut := NewTensor(1, embedDim)
 
+	// Grow per-head scratch slices if needed. Reused across heads here
+	// and across consecutive cached steps (they hold no state).
+	if cap(mha.stepQhBuf) < headDim {
+		mha.stepQhBuf = make([]float32, headDim)
+	}
+	if cap(mha.stepScoresBuf) < seqLen {
+		mha.stepScoresBuf = make([]float32, seqLen)
+	}
+	Qh := mha.stepQhBuf[:headDim]
+	scores := mha.stepScoresBuf[:seqLen]
+
 	// Per-head attention. With a single-row query the attention reduces
 	// to a vector × matrix^T softmax × matrix, no masking needed because
 	// the new token is the last row of cache (everything is "past").
 	for h := 0; h < numHeads; h++ {
 		hStart := h * headDim
 
-		// Extract this head's Q row [1, headDim].
-		Qh := make([]float32, headDim)
+		// Extract this head's Q row [1, headDim] into the reused buffer.
 		for j := 0; j < headDim; j++ {
 			Qh[j] = Q.Data[hStart+j]
 		}
 
-		// Compute scores Qh · Kh^T → [seqLen]
-		scores := make([]float32, seqLen)
+		// Compute scores Qh · Kh^T → [seqLen] in the reused buffer.
 		for t := 0; t < seqLen; t++ {
 			kOff := t*embedDim + hStart
 			s := float32(0)
@@ -141,7 +175,9 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 	}
 
 	// Output projection.
-	return attnOut.MatMul(mha.WO).Add(mha.BO)
+	out := attnOut.MatMul(mha.WO)
+	out.AddInPlace(mha.BO)
+	return out
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -151,13 +187,17 @@ func (mha *MultiHeadAttention) ForwardCachedStep(x *Tensor, cache *KVCache) *Ten
 // ForwardCachedStep mirrors TransformerBlock.Forward semantics for a
 // single new token, given the per-layer KV cache.
 func (tb *TransformerBlock) ForwardCachedStep(x *Tensor, cache *KVCache) *Tensor {
+	// No backward in the cache path — nothing aliases x or attnOut/ffnOut,
+	// so fold the residual directly into the fresh sub-layer outputs.
 	normed1 := x.LayerNorm(tb.LN1Gamma, tb.LN1Beta)
 	attnOut := tb.Attn.ForwardCachedStep(normed1, cache)
-	x = x.Add(attnOut)
+	attnOut.AddInPlace(x)
+	x = attnOut
 
 	normed2 := x.LayerNorm(tb.LN2Gamma, tb.LN2Beta)
 	ffnOut := tb.FFN.Forward(normed2)
-	x = x.Add(ffnOut)
+	ffnOut.AddInPlace(x)
+	x = ffnOut
 
 	return x
 }
@@ -173,10 +213,12 @@ type transformerCache struct {
 	SeqLen int // number of tokens in cache (== prompt length after prefill)
 }
 
-func newTransformerCache(numLayers int) *transformerCache {
+// newTransformerCachePrealloc creates a cache whose K/V slices have
+// capacity for maxSeqLen rows so the per-step append is realloc-free.
+func newTransformerCachePrealloc(numLayers, maxSeqLen, embedDim int) *transformerCache {
 	tc := &transformerCache{Layers: make([]*KVCache, numLayers)}
 	for i := range tc.Layers {
-		tc.Layers[i] = &KVCache{}
+		tc.Layers[i] = newKVCacheLayer(maxSeqLen, embedDim)
 	}
 	return tc
 }
@@ -187,12 +229,14 @@ func newTransformerCache(numLayers int) *transformerCache {
 // K/V, and the cost is dominated by the prompt itself (O(N^2) once)
 // which is what the user already paid for in the un-cached path.
 func (m *MiniTransformer) prefill(promptIDs []int) (*transformerCache, *Tensor) {
-	cache := newTransformerCache(len(m.Blocks))
+	embedDim := m.Config.EmbedDim
+	// Preallocate K/V capacity for the full max sequence length so the
+	// per-step appendRow inside ForwardCachedStep grows in place.
+	cache := newTransformerCachePrealloc(len(m.Blocks), m.Config.MaxSeqLen, embedDim)
 	if len(promptIDs) == 0 {
 		return cache, nil
 	}
 
-	embedDim := m.Config.EmbedDim
 	var lastHidden *Tensor // [1, embedDim] from the final token after the stack
 
 	for pos, id := range promptIDs {
