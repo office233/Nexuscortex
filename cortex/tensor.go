@@ -187,7 +187,39 @@ func (a *Tensor) MatMulInto(out, b *Tensor) {
 		}
 	}
 
+	// Hot path for cached single-token generation: M=1 reduces to GEMV.
+	if M == 1 {
+		gemvRow(a.Data, b.Data, out.Data, K, N)
+		return
+	}
+
 	matmulRows(a.Data, b.Data, out.Data, 0, M, K, N)
+}
+
+// gemvRow computes c[0:N] = a[0:K] × b[K, N] using the i-k-j order with
+// the j loop unrolled 4×. b is laid out row-major [K, N]. The unroll lets
+// Go's compiler emit independent FMA-ish chains and avoids re-zeroing N
+// elements in a separate pass.
+func gemvRow(a, b, c []float32, K, N int) {
+	// Zero accumulator row.
+	for j := 0; j < N; j++ {
+		c[j] = 0
+	}
+	nUnroll := N &^ 3 // largest multiple of 4 ≤ N
+	for k := 0; k < K; k++ {
+		aik := a[k]
+		bOff := k * N
+		j := 0
+		for ; j < nUnroll; j += 4 {
+			c[j] += aik * b[bOff+j]
+			c[j+1] += aik * b[bOff+j+1]
+			c[j+2] += aik * b[bOff+j+2]
+			c[j+3] += aik * b[bOff+j+3]
+		}
+		for ; j < N; j++ {
+			c[j] += aik * b[bOff+j]
+		}
+	}
 }
 
 // matmulRowsSequential computes C[rowStart:rowEnd, :] = A × B with the
@@ -261,7 +293,37 @@ func (a *Tensor) MatMulTransposedInto(out, b *Tensor) {
 		}
 	}
 
+	// Hot path: single-token logits projection (M=1, N=vocab, K=embedDim).
+	if M == 1 {
+		gemvRowT(a.Data, b.Data, out.Data, K, N)
+		return
+	}
+
 	matmulTRows(a.Data, b.Data, out.Data, 0, M, K, N)
+}
+
+// gemvRowT computes c[0:N] = a[0:K] × b[N, K]^T (i.e. c[j] = dot(a, b[j])).
+// Inner k loop unrolled 4× with four independent accumulators so the
+// compiler can schedule them in parallel and the dependency chain
+// doesn't bottleneck the FMA pipeline.
+func gemvRowT(a, b, c []float32, K, N int) {
+	kUnroll := K &^ 3
+	for j := 0; j < N; j++ {
+		bOff := j * K
+		var s0, s1, s2, s3 float32
+		k := 0
+		for ; k < kUnroll; k += 4 {
+			s0 += a[k] * b[bOff+k]
+			s1 += a[k+1] * b[bOff+k+1]
+			s2 += a[k+2] * b[bOff+k+2]
+			s3 += a[k+3] * b[bOff+k+3]
+		}
+		sum := s0 + s1 + s2 + s3
+		for ; k < K; k++ {
+			sum += a[k] * b[bOff+k]
+		}
+		c[j] = sum
+	}
 }
 
 func matmulTRowsSequential(a, b, c []float32, rowStart, rowEnd, K, N int) {
