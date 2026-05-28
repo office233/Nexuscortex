@@ -291,14 +291,26 @@ func (a *Tensor) Add(b *Tensor) *Tensor {
 	panic(fmt.Sprintf("Add shape mismatch: %v + %v", a.Shape, b.Shape))
 }
 
-// AddInPlace adds b to a in-place (modifies a).
+// AddInPlace adds b to a in-place (modifies a). Supports the same
+// element-wise and 2D+bias broadcast shapes as Add.
 func (a *Tensor) AddInPlace(b *Tensor) {
-	if len(a.Data) != len(b.Data) {
-		panic(fmt.Sprintf("AddInPlace shape mismatch: %v + %v", a.Shape, b.Shape))
+	if len(a.Data) == len(b.Data) {
+		for i := range a.Data {
+			a.Data[i] += b.Data[i]
+		}
+		return
 	}
-	for i := range a.Data {
-		a.Data[i] += b.Data[i]
+	if len(a.Shape) == 2 && len(b.Shape) == 1 && b.Shape[0] == a.Shape[1] {
+		M, N := a.Shape[0], a.Shape[1]
+		for i := 0; i < M; i++ {
+			off := i * N
+			for j := 0; j < N; j++ {
+				a.Data[off+j] += b.Data[j]
+			}
+		}
+		return
 	}
+	panic(fmt.Sprintf("AddInPlace shape mismatch: %v + %v", a.Shape, b.Shape))
 }
 
 // Scale multiplies every element by a scalar.
@@ -308,6 +320,13 @@ func (t *Tensor) Scale(s float32) *Tensor {
 		c.Data[i] *= s
 	}
 	return c
+}
+
+// ScaleInPlace multiplies every element by s in place.
+func (t *Tensor) ScaleInPlace(s float32) {
+	for i := range t.Data {
+		t.Data[i] *= s
+	}
 }
 
 // Transpose returns the transpose of a 2D tensor.
@@ -350,12 +369,17 @@ func (t *Tensor) Row(i int) *Tensor {
 // Approximation: GELU(x) ≈ 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x³)))
 func (t *Tensor) GELU() *Tensor {
 	c := t.Clone()
-	sqrt2pi := float32(math.Sqrt(2.0 / math.Pi))
-	for i, x := range c.Data {
-		inner := sqrt2pi * (x + 0.044715*x*x*x)
-		c.Data[i] = 0.5 * x * (1.0 + float32(math.Tanh(float64(inner))))
-	}
+	c.GELUInPlace()
 	return c
+}
+
+// GELUInPlace applies GELU to every element in place.
+func (t *Tensor) GELUInPlace() {
+	sqrt2pi := float32(math.Sqrt(2.0 / math.Pi))
+	for i, x := range t.Data {
+		inner := sqrt2pi * (x + 0.044715*x*x*x)
+		t.Data[i] = 0.5 * x * (1.0 + float32(math.Tanh(float64(inner))))
+	}
 }
 
 // ReLU applies the Rectified Linear Unit: max(0, x).
@@ -377,21 +401,24 @@ func (t *Tensor) ReLU() *Tensor {
 // For a [M, N] tensor, softmax is computed independently for each row.
 func (t *Tensor) Softmax() *Tensor {
 	c := t.Clone()
+	c.SoftmaxInPlace()
+	return c
+}
 
+// SoftmaxInPlace applies softmax along the last dimension in place.
+func (t *Tensor) SoftmaxInPlace() {
 	if len(t.Shape) == 1 {
-		softmaxRow(c.Data)
-		return c
+		softmaxRow(t.Data)
+		return
 	}
-
 	if len(t.Shape) == 2 {
 		M, N := t.Shape[0], t.Shape[1]
 		for i := 0; i < M; i++ {
-			softmaxRow(c.Data[i*N : (i+1)*N])
+			softmaxRow(t.Data[i*N : (i+1)*N])
 		}
-		return c
+		return
 	}
-
-	panic(fmt.Sprintf("Softmax supports 1D/2D tensors, got shape %v", t.Shape))
+	panic(fmt.Sprintf("SoftmaxInPlace supports 1D/2D tensors, got shape %v", t.Shape))
 }
 
 func softmaxRow(data []float32) {

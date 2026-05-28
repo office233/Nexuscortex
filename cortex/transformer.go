@@ -135,10 +135,14 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 	// Cache input for backward
 	mha.lastInput = x
 
-	// Project Q, K, V: [seqLen, embedDim] × [embedDim, embedDim] = [seqLen, embedDim]
-	Q := x.MatMul(mha.WQ).Add(mha.BQ)
-	K := x.MatMul(mha.WK).Add(mha.BK)
-	V := x.MatMul(mha.WV).Add(mha.BV)
+	// Project Q, K, V: [seqLen, embedDim] × [embedDim, embedDim] = [seqLen, embedDim].
+	// MatMul returns a fresh tensor, so the bias add is safe in place.
+	Q := x.MatMul(mha.WQ)
+	Q.AddInPlace(mha.BQ)
+	K := x.MatMul(mha.WK)
+	K.AddInPlace(mha.BK)
+	V := x.MatMul(mha.WV)
+	V.AddInPlace(mha.BV)
 
 	mha.lastQ = Q
 	mha.lastK = K
@@ -170,8 +174,10 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 			}
 		}
 
-		// Attention scores: [seqLen, seqLen] = Q_h × K_h^T / sqrt(headDim)
-		scores := Qh.MatMulTransposed(Kh).Scale(scale)
+		// Attention scores: [seqLen, seqLen] = Q_h × K_h^T / sqrt(headDim).
+		// MatMulTransposed returns a fresh tensor; scale and softmax operate in place.
+		scores := Qh.MatMulTransposed(Kh)
+		scores.ScaleInPlace(scale)
 
 		// Causal mask: set future positions to -inf
 		for i := 0; i < seqLen; i++ {
@@ -180,8 +186,9 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 			}
 		}
 
-		// Softmax
-		weights := scores.Softmax()
+		// Softmax in place on the scores buffer.
+		scores.SoftmaxInPlace()
+		weights := scores
 
 		// Save weights for backward
 		copy(allWeights.Data[h*seqLen*seqLen:], weights.Data)
@@ -199,8 +206,9 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 
 	mha.lastAttnWeights = allWeights
 
-	// Output projection: [seqLen, embedDim] × [embedDim, embedDim]
-	output := attnOut.MatMul(mha.WO).Add(mha.BO)
+	// Output projection: [seqLen, embedDim] × [embedDim, embedDim].
+	output := attnOut.MatMul(mha.WO)
+	output.AddInPlace(mha.BO)
 	mha.lastAttnOut = attnOut
 
 	return output
@@ -262,13 +270,18 @@ func NewFeedForward(embedDim, ffnDim int, rng *rand.Rand) *FeedForward {
 func (ff *FeedForward) Forward(x *Tensor) *Tensor {
 	ff.lastInput = x
 
-	hidden := x.MatMul(ff.W1).Add(ff.B1)
+	// MatMul gives a fresh tensor, so the bias add can be in place.
+	hidden := x.MatMul(ff.W1)
+	hidden.AddInPlace(ff.B1)
 	ff.lastHidden = hidden
 
+	// GELU must produce a separate tensor: backward needs both lastHidden
+	// (pre-activation) and lastAct (post-activation).
 	activated := hidden.GELU()
 	ff.lastAct = activated
 
-	output := activated.MatMul(ff.W2).Add(ff.B2)
+	output := activated.MatMul(ff.W2)
+	output.AddInPlace(ff.B2)
 	return output
 }
 
@@ -349,17 +362,21 @@ func NewTransformerBlock(embedDim, numHeads, ffnDim int, rng *rand.Rand) *Transf
 func (tb *TransformerBlock) Forward(x *Tensor) *Tensor {
 	tb.lastInput = x
 
-	// Pre-norm attention with residual
+	// Pre-norm attention with residual.
+	// attnOut is a fresh tensor; fold x into it in place to avoid a Clone.
+	// Important: do NOT mutate x — tb.lastInput still references it.
 	normed1 := x.LayerNorm(tb.LN1Gamma, tb.LN1Beta)
 	tb.lastNormed1 = normed1
 	attnOut := tb.Attn.Forward(normed1)
-	x = x.Add(attnOut) // residual
+	attnOut.AddInPlace(x)
+	x = attnOut
 
-	// Pre-norm FFN with residual
+	// Pre-norm FFN with residual (same in-place trick on ffnOut).
 	normed2 := x.LayerNorm(tb.LN2Gamma, tb.LN2Beta)
 	tb.lastNormed2 = normed2
 	ffnOut := tb.FFN.Forward(normed2)
-	x = x.Add(ffnOut) // residual
+	ffnOut.AddInPlace(x)
+	x = ffnOut
 
 	return x
 }
