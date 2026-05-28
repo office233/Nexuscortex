@@ -1,28 +1,30 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="Nexus Cortex — Bio-inspired cognitive engine" width="100%" />
+  <img src="docs/images/banner.png" alt="Nexus Cortex — The world's first Organic Cognitive Model" width="100%" />
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/🧠_NEXUS-CORTEX-blueviolet?style=for-the-badge&labelColor=0d1117" height="40" />
 </p>
 
-<h3 align="center">A bio-inspired cognitive engine written from scratch in Go</h3>
-<h4 align="center">Not an LLM wrapper. Not a transformer clone. A different kind of intelligence.</h4>
+<h3 align="center">The world's first Organic Cognitive Model (OCM)</h3>
+<h4 align="center">A new class of intelligence. Not an LLM. Not AGI. Something else entirely.</h4>
 
-<p align="center"><i>"GPT-4 costs $100M to train and can't learn your name.<br/>NexusCortex runs on a laptop and never forgets."</i></p>
+<p align="center"><i>"LLMs predict the next token. OCMs think."</i></p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Paradigm-OCM-ff6b6b?style=flat-square" />
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go" />
   <img src="https://img.shields.io/badge/CUDA-Optional-76B900?style=flat-square&logo=nvidia" />
   <img src="https://img.shields.io/badge/Params-500M+-purple?style=flat-square" />
   <img src="https://img.shields.io/badge/Tests-137_passing-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/Source_Files-107-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/Dependencies-4-orange?style=flat-square" />
+  <img src="https://img.shields.io/badge/Zero_AI_Dependencies-✔-gold?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" />
 </p>
 
 <p align="center">
-  <a href="#-what-is-this">What Is This</a> •
+  <a href="#-the-problem-with-llms">Why Not LLMs</a> •
+  <a href="#-what-is-an-ocm">What Is An OCM</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-neural-dashboard">Dashboard</a> •
@@ -32,7 +34,51 @@
 
 ---
 
-## 🔬 What Is This
+## 🚨 The Problem With LLMs
+
+Large Language Models are the horse carriages of AI. Impressive, expensive, and fundamentally limited:
+
+- ❌ **They can't learn.** Training costs $100M+. After that, they're frozen.
+- ❌ **They forget.** Fine-tune on new data → old knowledge disappears (catastrophic forgetting).
+- ❌ **They hallucinate.** They don't know what they don't know. They guess confidently.
+- ❌ **They waste compute.** Every token activates ALL parameters. 70B params × every word.
+- ❌ **They have no memory.** Every conversation starts from zero.
+- ❌ **They have no emotion.** Temperature slider ≠ intelligence.
+- ❌ **They require datacenters.** 80GB VRAM minimum for a serious model.
+
+The industry's answer? **Make them bigger.** More params. More data. More GPUs. More money.
+
+Our answer? **Make them smarter.**
+
+---
+
+## 🧠 What Is An OCM?
+
+An **Organic Cognitive Model** is a fundamentally new class of AI — inspired by the human brain, not by linear algebra.
+
+```
+LLM  = Large    Language   Model   → static • expensive • forgets • hallucinates
+OCM  = Organic  Cognitive  Model   → living • free • remembers • knows its limits
+```
+
+Where an LLM is a **very expensive autocomplete**, an OCM is an **organism that thinks, learns, remembers, and grows.**
+
+### The OCM Manifesto
+
+| Principle | What It Means |
+|-----------|---------------|
+| 🧬 **Organic** | It grows. It adapts. It learns continuously without retraining. |
+| 🧠 **Cognitive** | It doesn't just process language — it reasons, remembers, and feels. |
+| 💤 **Sleep** | It consolidates memories like a biological brain. It never forgets. |
+| 🔍 **Curiosity** | It knows what it doesn't know — and actively seeks to learn. |
+| ⚡ **Sparse** | It activates only what it needs. 73.9× faster than dense compute. |
+| 💻 **Local** | It runs on your laptop. No datacenter. No API key. No cost. |
+
+> NexusCortex is the world's first OCM implementation.
+
+---
+
+## 🔬 How It Works
 
 Nexus Cortex is a **complete cognitive engine** — modeled after the human brain's architecture — written entirely from scratch in Go with optional CUDA acceleration.
 
@@ -44,19 +90,6 @@ It doesn't call OpenAI. It doesn't wrap Hugging Face. It doesn't use PyTorch.
 Input → Wernicke (comprehension) → Hippocampus (memory) → Prefrontal (reasoning)
       → Expert Routing → Broca (language generation) → Emotion → Output
 ```
-
-### Why does this exist?
-
-Every AI project today calls an API. This one builds the brain from first principles:
-
-- **Sparse Distributed Representations** instead of dense embeddings
-- **Ternary weights {-1, 0, +1}** instead of float32 — 16x smaller
-- **Associative memory** instead of attention-is-all-you-need
-- **Sleep consolidation** instead of catastrophic forgetting
-- **Curiosity-driven learning** instead of static datasets
-- **Emotional modulation** instead of temperature knobs
-
-> Built to explore what happens when you engineer intelligence from biology, not from linear algebra.
 
 ---
 
@@ -130,13 +163,13 @@ Every AI project today calls an API. This one builds the brain from first princi
 
 ---
 
-## 💀 Why This Wins At Scale
+## 💀 OCM vs LLM — Why This Architecture Wins
 
-LLMs are **static encyclopedias**. NexusCortex is a **living brain**.
+LLMs are **static encyclopedias**. An OCM is a **living brain**.
 
-At equal parameter count, this architecture dominates:
+### At Equal Parameters
 
-| | GPT / LLaMA 70B | NexusCortex 70B |
+| | GPT / LLaMA 70B | NexusCortex OCM 70B |
 |--|:--:|:--:|
 | **Storage** | 140 GB (float32) | **17.5 GB** (ternary) |
 | **VRAM needed** | 80 GB (A100 GPU) | **~5 GB** (sparse experts) |
@@ -149,9 +182,20 @@ At equal parameter count, this architecture dominates:
 | **Emotional intelligence** | None | **5D valence-arousal system** |
 | **Autonomous learning** | None | **Curiosity-driven web learning** |
 
-The bet: intelligence doesn't require **bigger matrices**. It requires **better architecture**.
+### Paradigm Comparison
 
-> An LLM is a very expensive autocomplete. NexusCortex is an organism that thinks, learns, remembers, and grows.
+| | Transformer (2017) | OCM (2026) |
+|--|:--:|:--:|
+| **Inspiration** | Linear algebra | Neuroscience |
+| **Core operation** | Matrix multiplication | Sparse neural activation |
+| **Weight format** | float32 / float16 | Ternary {-1, 0, +1} |
+| **Memory** | None (context window only) | Episodic + Semantic + Working |
+| **Learning** | Offline batch training | Online continuous learning |
+| **Forgetting** | Catastrophic | Controlled (sleep cycles) |
+| **Self-awareness** | None | Metacognitive self-model |
+| **Scaling law** | More params = more cost | More experts = same cost |
+
+> The age of brute-force intelligence is over. The age of organic intelligence has begun.
 
 ---
 
@@ -398,7 +442,7 @@ No. CPU-first design. CUDA is optional and only accelerates sparse ternary forwa
 
 ## 📝 License
 
-MIT — Use it, fork it, build on it.
+MIT — Use it, fork it, build on it. The future of AI should be open.
 
 ---
 
@@ -407,7 +451,12 @@ MIT — Use it, fork it, build on it.
 </p>
 
 <p align="center">
-  <strong>🧠 107 source files. 137 tests. 500M parameters. Zero external AI dependencies.</strong>
+  <strong>🧠 The first OCM. 107 source files. 137 tests. 500M parameters. Zero external AI dependencies.</strong>
+</p>
+
+<p align="center">
+  <i>LLMs are the horse carriages of AI.<br/>
+  NexusCortex is the engine that replaces them.</i>
 </p>
 
 <p align="center">
