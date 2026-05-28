@@ -58,10 +58,16 @@ scratch_test_*.go
 data/cortex-training/
 !data/cortex-training/.gitkeep
 
+# Per-run cortex snapshots and backups (regenerable from training)
+data/cortex-auto-*/
+data/cortex-broca-smoke/
+data/cortex-broca-*/
+
 # CUDA build artifacts
 *.lib
 *.exp
 *.pdb
+*.obj
 
 # Training binary
 train-radio.exe
