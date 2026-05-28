@@ -1,5 +1,7 @@
 # NexusCortex
 
+[![CI](https://github.com/office233/Nexuscortex/actions/workflows/ci.yml/badge.svg)](https://github.com/office233/Nexuscortex/actions/workflows/ci.yml)
+
 Experimental sparse cognitive architecture written in Go.
 
 NexusCortex is a research and learning project exploring whether ideas from Sparse Distributed Representations, associative memory, online learning, sparse routing, and local-first compute can be combined into a small cognitive-system prototype.
@@ -45,6 +47,38 @@ This is not a replacement for frontier LLMs. It is not an AGI claim. The goal is
 I wanted to learn what sits below API-level AI development: memory, retrieval, sparse representations, inference loops, state, routing, and performance constraints.
 
 Instead of only calling model APIs, I built experimental components from scratch to understand how these mechanisms behave.
+
+---
+
+## System Overview
+
+```mermaid
+graph TD
+    Input["📥 Input Layer"] --> Sensory["Sensory Cortex"]
+
+    Sensory --> SDR["⚡ SDR Attention Hub"]
+
+    SDR --> Wernicke["Wernicke\n(Comprehension)"]
+    SDR --> Broca["Broca\n(Production)"]
+    SDR --> Hippocampus["Hippocampus\n(Memory)"]
+    SDR --> Prefrontal["Prefrontal\n(Reasoning)"]
+    SDR --> Cerebellum["Cerebellum\n(Sequences)"]
+    SDR --> Emotion["Emotion\n(Valence)"]
+    SDR --> Curiosity["Curiosity\n(Novelty)"]
+    SDR --> Sleep["Sleep\n(Consolidation)"]
+    SDR --> Reward["Reward\n(Reinforcement)"]
+
+    Hippocampus --> Memory["🧠 Memory System\n(Episodic + Semantic)"]
+    Sleep --> SleepC["🌙 Sleep Consolidation\n(Replay & Pruning)"]
+    SleepC --> Memory
+
+    Wernicke --> Broca
+    Prefrontal --> Broca
+    Emotion --> Prefrontal
+    Reward --> Curiosity
+
+    Broca --> Output["📤 Output Layer"]
+```
 
 ---
 
