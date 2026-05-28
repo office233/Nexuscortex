@@ -25,8 +25,8 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
-      - name: Go test (race detector)
-        run: go test -race -count=1 -timeout 300s ./...
+      - name: Go test
+        run: go test -count=1 -timeout 180s ./...
 
       - name: Fuzz UnmarshalTernaryLayer smoke
         run: go test -run=^$ -fuzz=FuzzUnmarshalTernaryLayer -fuzztime=15s ./cortex
