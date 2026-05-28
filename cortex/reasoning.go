@@ -239,8 +239,7 @@ func (r *ReasoningEngine) solveCompoundWordProblem(input string, numbers []float
 // Pattern Recognition — Numeric sequence prediction
 // ─────────────────────────────────────────────────────────────────────
 
-// reSequence matches patterns like "2, 4, 8, 16, ?" or "what comes next: 2 4 8 16".
-var reSequence = regexp.MustCompile(`(?:what\s+comes\s+next|next\s+(?:number|in\s+the\s+sequence)|pattern|sequence)\s*[:\-]?\s*`)
+
 
 func (r *ReasoningEngine) trySequence(input string) (string, bool) {
 	// Must look like a sequence question.

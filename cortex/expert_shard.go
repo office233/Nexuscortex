@@ -175,7 +175,7 @@ type ShardedModelHeader struct {
 	Reserved     [9]byte
 }
 
-const shardedHeaderSize = 4 + 2 + 4 + 4 + 4 + 1 + 9 // 28 bytes
+
 
 // ShardedModelIndex stores file offsets for all experts.
 type ShardedModelIndex struct {
