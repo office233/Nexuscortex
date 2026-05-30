@@ -12,7 +12,7 @@ This is not a replacement for frontier LLMs. It is not an AGI claim. The goal is
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go" />
   <img src="https://img.shields.io/badge/CUDA-Optional-76B900?style=flat-square&logo=nvidia" />
   <img src="https://img.shields.io/badge/Tests-137_passing-brightgreen?style=flat-square" />
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square" />
 </p>
 
 <p align="center">
@@ -281,7 +281,7 @@ No. CPU-first design. CUDA is optional and only accelerates sparse ternary forwa
 
 ## License
 
-MIT
+GNU Affero General Public License v3.0 (AGPL-3.0) - see the [LICENSE](LICENSE) file for details.
 
 ---
 
